@@ -1,0 +1,137 @@
+---
+title: "01.0_source_practice_and_demographic_data"
+author: "Thomas Richards"
+date: "20/12/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Source CCG data
+
+This workbook collects data from online regarding CCG names/ids and shape data.
+The data are collated ready for the subsequent analysis.
+
+An internet connection is required to run this code.
+
+
+## Code required:
+
+## Libraries required:
+sf
+tidyverse 
+
+## Data source references:
+
+ONS portal: https://geoportal.statistics.gov.uk/
+NHS Digital: https://digital.nhs.uk
+
+
+## 1. Load libraries
+
+Load libraries, import script files, and set the working directory to the folder containing the workbook:
+
+```{r}
+# library(stringr)
+# library(tidyverse) 
+# library(DBI) 
+# library(tmap)
+# library(RCurl)
+# library(sf)
+
+# get directory of current script and set it as working directory
+filedir <- dirname(rstudioapi::getSourceEditorContext()$path)
+setwd(filedir)
+getwd()
+
+# TODO: for removal?
+# import script files containing functions
+# source("./InhalerPrescribingFunctions.R", echo=FALSE)
+
+# create data folder if not yet existent
+if (!dir.exists("./data")) {
+  dir.create("./data")
+}
+
+# create data folder if not yet existent
+if (!dir.exists("./data-source")) {
+  dir.create("./data-source")
+}
+
+# for measuring time taken
+start_time <- Sys.time()
+
+```
+
+## 2. Source CCG names, ONS codes, and shape files from ONS
+
+```{r}
+# get CCG codes and shapes from ONS
+source("./01.1_get_ONS_CCG_shapes.R", echo=FALSE) # Calls ONS for CCG codes and shapes, does some sorting, leaves ONS_ccg_all_years variable in workspace
+
+```
+
+## 3. Source CCG names, CCG codes, and number of patients from NHS digital
+
+
+```{r}
+# get CCG id codes and number of patients from NHS
+source("./01.2_get_NHS_CCG_patient_numbers.R", echo=FALSE) # Calls NHS for CCG id codes and number of patients, does some sorting, leaves NHS_ccg_all_years variable in workspace
+
+```
+
+
+## 4. Merge shape and patient data files and save for output
+
+```{r}
+# Load the data if already downloaded...
+# load("./data-source/ONS_ccg_all_years.Rdata")
+# BNF_codes_measures <- read.csv("./data-source/NHS_ccg_all_years.csv")
+
+
+# Join to form final dataframe
+OP_ccg_all_years <- left_join(NHS_ccg_all_years, ONS_ccg_all_years)
+
+# Plot each year to check
+for(plot_year in 2015:2020){
+  plot_data <- OP_ccg_all_years %>%
+    filter(grepl(paste0(plot_year, "."), OP_ccg_all_years$date))
+  
+  plot(plot_data$geom)
+}
+
+
+# save the variable
+st_geometry(OP_ccg_all_years) <- "geom"
+file <- "./data/OP_ccg_all_years.RData"
+save(list = c("OP_ccg_all_years"), file = file)
+```
+
+
+## 5. Collect QOF data from NHS Digital for all years 
+QOF data provides list register size (total number of patients registered at a practice) and number of asthma/patients registered at practice level.
+```{r}
+# get total number of patients, and number of patients with asthma/COPD from NHS Digital QOF reviews
+source("./01.3_get_QOF_data.R", echo=FALSE) # Calls NHS Digital for QOF data, does some sorting, leaves OQF_all variable in workspace
+```
+
+## 6. Collect number of patients per LSOA registered at a GP practice  
+NHS Digital provides lists of number of patients registered at a practice per LSOA.
+
+```{r}
+# get number of patients at a practice per LSOA across all years 
+source("./01.4_get_LSOA_patient_data.R", echo=FALSE) # Calls NHS Digital for data, does some sorting, leaves OP_patients_all_years variable in workspace
+```
+
+
+## 7. Download IMD data
+Download Index of Multiple Deprivation (IMD) data from Open Data Communities.
+
+```{r}
+# Download, sort, and save IMD data.
+source("./01.5_get_LSOA_IMD_data.R", echo=FALSE) # Retrieves, saves, sorts data, leaves IMD_all variable in workspace
+
+```
+

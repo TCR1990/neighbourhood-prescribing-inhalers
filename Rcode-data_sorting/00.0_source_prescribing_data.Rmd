@@ -1,0 +1,175 @@
+---
+title: "00.0_source_prescribing_data"
+author: "Thomas Richards"
+date: "20/12/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Source Prescribing data
+
+This workbook sources data from various online sources required for the analysis of inhaler prescribing patterns.
+The data are collated ready for the subsequent analysis.
+
+An internet connection is required to run this code.
+
+
+## Code required:
+00.1_get_OP_codes.R
+00.2_get_NHSBSA_codes.R
+00.3_get_BNF_info_from_OP.R
+
+## Libraries required:
+
+
+## Data source references:
+
+
+
+## 1. Load libraries
+
+Load libraries, import script files, and set the working directory to the folder containing the workbook:
+
+```{r}
+# library(stringr)
+# library(tidyverse) 
+# library(DBI) 
+# library(tmap)
+# library(RCurl)
+# library(sf)
+
+# get directory of current script and set it as working directory
+filedir <- dirname(rstudioapi::getSourceEditorContext()$path)
+setwd(filedir)
+getwd()
+
+# TODO: for removal?
+# import script files containing functions
+# source("./InhalerPrescribingFunctions.R", echo=FALSE)
+
+# create data folder if not yet existent
+if (!dir.exists("./data")) {
+  dir.create("./data")
+}
+
+
+# for measuring time taken
+start_time <- Sys.time()
+
+```
+## 2. Source and sort British National Formulary (BNF) drug identifier codes
+
+2.1. Get codes for measures from OpenPrescribing.net
+2.2. Get codes for measures from NHSBSA dashboard
+2.3. Merge together to form complete list
+
+```{r}
+# TODO: Could combine these scripts into a single script??
+
+# 2.1 get codes for measures from OpenPrescribing.net
+source("./00.1_get_OP_codes.R", echo=FALSE) # Calls OpenPrescribing.net for BNF codes, leaves OP_codes variable in workspace
+
+# 2.2 get codes for measures NHSBSA
+source("./00.2_get_NHSBSA_codes.R", echo=FALSE) # Calls NHSBSA for BNF codes, leaves NHSBSA_codes variable in workspace
+
+# 2.3 Combine BNF codes from OpenPrescribing.net and NHSBSA
+# There are conflicts between OP and NHSBSA measures for 21 codes for high_dose_ics_products Below coerces them to use the OP definition.
+BNF_codes_combined_pre_checks <- OP_codes %>%
+  full_join(NHSBSA_codes, by = c("bnf_code")) %>%
+  mutate(high_dose_ics_products = coalesce(high_dose_ics_products.x, high_dose_ics_products.y),
+         saba_inhaler_products = coalesce(saba_inhaler_products.x,  saba_inhaler_products.y),
+         all_ics_products = coalesce(all_ics_products.x, all_ics_products.y),
+         .keep=c("unused")) %>%
+  select(bnf_code, bnf_name, everything()) %>%
+  arrange(bnf_code)
+
+# NA values in list are not included in so set as false.
+BNF_codes_combined_pre_checks[is.na(BNF_codes_combined_pre_checks)] = FALSE
+
+# Convert bnf_names which are NA to false - if available, these are filled by 00.3_get_BNF_info_from_OP.R
+BNF_codes_combined_pre_checks %>% mutate(bnf_name = ifelse(bnf_name == FALSE, NA, bnf_name))
+
+# Write file for use by 00.3_get_BNF_info_from_OP.R
+write_csv(BNF_codes_combined_pre_checks, file = './data-source/BNF_codes_combined_pre_checks.csv')
+
+# Clear OP_codes and NHSBSA_codes from workspace
+rm(list=c("OP_codes", "NHSBSA_codes", "BNF_codes_combined_pre_checks"))
+
+```
+
+2.4. Call OpenPrescribing.net API to get drug details (name, is generic) from code
+
+```{r}
+# Check codes against OP API to get details such as is_generic and full bnf_name
+# Depends on response from serve but can take 8-10 mins to run.
+source("./00.3_get_BNF_info_from_OP.R", echo=FALSE) # Calls OpenPrescribing.net for info from BNF codes, leaves BNF_codes_measures variable in workspace and saves in ./data folder.
+```
+
+
+## 3. Collect Prescribing data from Open Prescribing.net
+
+WARNING: this section could take ~18 hours to run.
+```{r}
+# Start time
+scrape_start_time <- Sys.time()
+
+# Collects prescribing data from code list for specific dates
+# Depends on response from serve but can take 18 hrs to run.
+source("./00.4_get_OP_prescriptions.R", echo=FALSE) # Calls OpenPrescribing.net for prescribing data leaves OP_prescriptions variable in workspace and saves in ./data folder.
+
+# End time
+scrape_end_time <- Sys.time()
+
+# Print time taken
+print(paste0("Started at:       ", scrape_start_time))
+print(paste0("Finished at:      ", scrape_end_time))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## 2. Source and sort British National Formulary (BNF) drug identifier codes
+
+```{r}
+
+
+cat(paste("\n\nFailed: ", failed))
+cat(paste("\nSuccessful: ", success))
+cat(paste("\nTotal: ", total))
+cat(start_time)
+end_time <- paste("\nJob finished: ", Sys.time(), ".", sep = "")
+cat(paste("\n", end_time))
+
+```
+
+

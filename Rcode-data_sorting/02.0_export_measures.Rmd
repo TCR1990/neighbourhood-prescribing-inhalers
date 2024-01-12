@@ -1,0 +1,1498 @@
+---
+title: "# Identifying unsafe patterns of asthma inhaler prescriptions in the UK"
+author: "Thomas Richards"
+date: "10/06/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(dev = 'png')
+knitr::opts_chunk$set(dpi=500)
+# knitr::opts_chunk$set(dpi=300,fig.width=7)
+```
+
+
+```{r}
+library(stringr)
+library(tidyverse) 
+library(DBI) 
+library(tmap)
+library(RCurl)
+library(sf)
+library(lubridate)
+library(readxl)
+
+# # get directory of current script and set it as working directory
+# filedir <- dirname(rstudioapi::getSourceEditorContext()$path)
+# setwd(filedir)
+# getwd()
+
+# load the data
+load("./data/OP_prescriptions_all_measures.RData")
+load("./data/OP_ccg_all_years.RData")
+QOF_all <- read.csv("./data/QOF_all.csv") %>% ungroup() %>% mutate(year = as.character(year))
+OP_codes_all_measures <- read.csv("./data/OP_codes_all_measures.csv")
+ccg_names <- OP_ccg_all_years
+st_geometry(ccg_names) <- NULL
+ccg_names <- ccg_names %>% select(ccg_id, ccg_name) %>% unique()
+ccg_names <- na.omit(ccg_names)
+ccg_names <- ccg_names[!duplicated(ccg_names[1]),]
+
+# to see what the algorithm expects
+single_prac_example <- read.csv("../Pythoncode/data/get_percentiles_for/single_prac_example.csv")
+single_ccg_example <- read.csv("../Pythoncode/data/get_percentiles_for/single_ccg_example.csv")
+
+# connect to the database
+db <- DBI::dbConnect(RSQLite::SQLite(), dbname="./data/OP_prescriptions_all_measures.sqlite")
+
+# Make a new table which has useable date formats
+OP_prescriptions <- OP_prescriptions_all_measures %>%
+  filter(setting == 4) %>%
+  mutate(ccg = gsub('.0', 'E', ccg, fixed = TRUE),
+         ccg = ifelse(ccg == 112, '16C', ccg),
+         date = as.POSIXct(date, format="%Y-%m-%d"),
+         year=format(date, "%Y"),
+         month=format(date, "%m"),
+         year_month=format(date, "%Y-%m")) 
+# %>%
+#   mutate(product_id = substring(bnf_code, 0, 11)) %>%
+#   left_join(OP_codes_all_measures, copy = TRUE)
+
+dbDisconnect(db)
+
+
+####CHECK OUTPUT DIRS
+output_dir <- './Paper_1/data/'
+
+OP_patients_all <- read.csv("./Paper_1/data/OP_patients_all_years.csv") %>%
+  mutate(year = as.character(year))
+
+
+
+```
+
+# Add new subset for LABA/ICS ratio measure (new)
+```{r}
+OP_codes_all_measures %>%
+  filter(laba_products == TRUE) %>%
+  pull(bnf_code) -> laba_codes
+
+OP_codes_all_measures %>%
+  filter(all_ics_products == TRUE) %>%
+  pull(bnf_code) -> all_ics_codes
+
+ics_not_laba_codes <- all_ics_codes[!all_ics_codes %in% laba_codes]
+
+OP_codes_all_measures %>%
+  mutate(ics_not_laba = ifelse(bnf_code %in% ics_not_laba_codes, 'TRUE', 'FALSE')) %>%
+  collect() -> OP_codes_all_measures
+
+```
+
+
+# cut down inhaler subcategories to only those that are used in measures
+```{r}
+OP_codes_all_measures_used_only <-
+  OP_codes_all_measures %>%
+  select(bnf_code, bnf_name, type, is_generic,
+    
+    high_dose_ics_products,  # icsdose
+    all_ics_products,        # icsdose
+    
+    # all_ics_products, # ics_pppm
+    # patients_resp, # ics_pppm
+    
+    laba_products, # laba_ics
+    ics_not_laba, # laba_ics
+    
+    saba_inhaler_products,  # saba
+    all_saba_ics_products, # saba
+    
+    mdi, # environmental_inhalers
+    mdi_dpi # environmental_inhalers
+    
+    
+    ## THESE ARE USED IN TRIPLE THERAPY, BUT NO OTHER MEASURE SO NOT INCLUDED HERE - SEE NHSBSA RESPIRATORY DASHBOARD DOCUMENT
+    # lama_products,
+    # ics_products,
+    # asthma_copd_medications
+)
+
+```
+
+
+
+
+# Remove rows that are not used in any relevant measure
+```{r}
+
+
+OP_codes_all_measures_used_only_short <- OP_codes_all_measures_used_only %>%
+  filter(
+    (high_dose_ics_products == TRUE |
+       all_ics_products == TRUE |
+       
+       laba_products == TRUE |
+       ics_not_laba == TRUE |
+       
+       saba_inhaler_products == TRUE |
+       all_saba_ics_products == TRUE |
+       
+       mdi == TRUE |
+       mdi_dpi == TRUE))
+      
+    ## THESE ARE USED IN TRIPLE THERAPY, BUT NO OTHER MEASURE SO NOT INCLUDED HERE - SEE NHSBSA RESPIRATORY DASHBOARD DOCUMENT
+       # lama_products == TRUE |
+       # ics_products == TRUE |
+       # asthma_copd_medications == TRUE))
+
+```
+
+# Make a dataframe of practice and CCG IDs and dates
+For some analyses, we need an empty dataframe of practice codes for each date. Practices are opened/closed throughout the year, and including all those in a single year will over/estimate weight when it comes to calculating at the LSOA level. Must there for have a list of which practices are open for each date. We get (an estimate of) this from OP_prescriptions, as this contains so many codes that only practices where no inhaler products are prescribed at all throughout the whole analysis period will be missed, which is relatively few.
+
+We create a row (date) for each practice in between the earliest and the latest time something was prescribed from a given practice. 
+
+# Practices
+```{r}
+OP_prescriptions %>%
+  filter(setting == 4) %>%
+  select(practice_id, practice_name, date, setting) %>%
+  distinct() %>%
+  group_by(practice_id, practice_name) %>%
+  tidyr::complete(
+    # date = seq(min(date), 
+    #            length = length(unique(OP_prescriptions$date)),
+    #            by = "1 months")) %>%
+    date = seq(from = min(date),
+               to = max(date),
+               by = '1 months')) %>%
+  fill(practice_id, practice_name, setting) %>% 
+  arrange(practice_id, date) %>%
+  ungroup() %>%
+  mutate(
+         year=format(date, "%Y"),
+         date=as.character(date)
+         ) %>%
+  collect() -> practices_dates
+
+write_csv(practices_dates, path = paste(output_dir, 'practices_dates.csv', sep=''))
+
+dates_years <- practices_dates %>% select(date, year) %>% distinct() %>% arrange(date)
+```
+
+
+# LSOAs
+```{r}
+OP_patients_all %>%
+  select(lsoa_id, year) %>%
+  distinct() %>%
+  full_join(dates_years, by = 'year') %>%
+  drop_na() %>%
+  arrange(date, lsoa_id) %>%
+  collect() -> lsoa_dates
+
+write_csv(lsoa_dates, path = paste(output_dir, 'lsoa_dates.csv', sep=''))
+
+```
+
+# CCGs
+```{r}
+OP_prescriptions %>%
+  filter(setting == 4) %>%
+  select(practice_id, practice_name, ccg, date, setting) %>%
+  distinct() %>%
+  group_by(practice_id, practice_name, ccg) %>%
+  tidyr::complete(
+    date = seq(from = min(date),
+               to = max(date),
+               by = '1 months')) %>%
+  # date = seq(from = min(date),
+  #            to = max(date),
+  #            by = '1 months')) %>%
+  fill(practice_id, practice_name, ccg, setting) %>% 
+  arrange(practice_id, date) %>%
+  ungroup() %>%
+  mutate(
+         year=format(date, "%Y"),
+         date=as.character(date)
+         ) %>%
+  collect() -> practices_ccgs_dates
+
+write_csv(practices_ccgs_dates, path = paste(output_dir, 'practices_ccgs_dates.csv', sep=''))
+
+```
+
+
+# Calcualte % of patients reviewed
+
+```{r}
+# Import reviews and calculate at LSOA level
+reviews_ast <- read_excel('./data/QOF_reviews/qof_reviews_only.xlsx',
+                          sheet = 'AST')
+reviews_ast <- as_tibble(reviews_ast)# %>% drop_na()
+
+reviews_copd <- read_excel('./data/QOF_reviews/qof_reviews_only.xlsx',
+                           sheet = 'COPD')
+reviews_copd <- as_tibble(reviews_copd) #%>% drop_na()
+
+reviews_ast %>%
+  rename(intervention_pc_ast = intervention_pc,
+         list_size_ast = list_size,
+         register_ast = register) %>%
+  left_join(reviews_copd %>%
+              rename(intervention_pc_copd = intervention_pc,
+                     list_size_copd = list_size,
+                     register_copd = register),
+            by = c('practice_id', 'practice_name', 'year')) %>%
+  drop_na() %>% 
+  mutate(year = as.character(year),
+         register_ast = as.integer(register_ast),
+         register_copd = as.integer(register_copd),) %>%
+  collect() -> reviews
+
+# calculate total number of patients who have had review
+reviews %>%
+  mutate(n_patients = register_ast + register_copd,
+         n_patients_reviewed_ast = register_ast*(intervention_pc_ast/100),
+         n_patients_reviewed_copd = register_copd*(intervention_pc_copd/100),
+         total_n_reviewed = n_patients_reviewed_ast + n_patients_reviewed_copd,
+         intervention_pc_total = (total_n_reviewed/n_patients)*100) %>%
+  collect() -> reviews_tot
+
+
+reviews_tot %>%
+  left_join(OP_patients, by="practice_id") %>%
+  drop_na() %>%
+  rename(patients_registered = count) %>%
+  group_by(practice_id) %>%
+  mutate(patients_registered_tot = sum(patients_registered)) %>%
+  ungroup() %>%
+  mutate(weighting_factor = patients_registered/patients_registered_tot,
+         n_patients = n_patients*weighting_factor,
+         n_patients_reviewed_ast = n_patients_reviewed_ast*weighting_factor,
+         n_patients_reviewed_copd = n_patients_reviewed_copd*weighting_factor,
+         total_n_reviewed = total_n_reviewed*weighting_factor) %>%
+  group_by(lsoa_id) %>%
+  summarise(n_patients = sum(n_patients),
+            total_n_reviewed = sum(total_n_reviewed)) %>%
+  # intervention_pc_ast = sum(intervention_pc_ast),
+  # intervention_pc_copd = sum(intervention_pc_copd),
+  # patients_registered_lsoa = sum(patients_registered)) %>%
+  ungroup() %>%
+  mutate(intervention_pc_total = (total_n_reviewed/n_patients)*100) %>%
+  collect() -> reviews_lsoa
+
+write_csv(reviews_lsoa, path = paste(output_dir, 'reviews_lsoa.csv', sep=''))
+
+reviews_prac <- reviews_tot %>% select(gsub('lsoa_id', 'practice_id', colnames(reviews_lsoa)))
+write_csv(reviews_prac, path = paste(output_dir, 'reviews_prac.csv', sep=''))
+
+```
+
+
+# Total number of prescriptions for subsets of BNF codes used to calculate measures
+## Calculate number of items/patients at practice level
+```{r}
+# calculate n items per category at practice level 
+OP_prescriptions %>%
+  mutate(
+    year=format(date, "%Y"),
+    date=as.character(date)
+  ) %>%
+  left_join(OP_codes_all_measures %>% 
+              select(bnf_code, 
+                     all_ics_products,
+                     high_dose_ics_products,
+                     saba_inhaler_products,
+                     all_saba_ics_products, 
+                     laba_products,
+                     lama_products,
+                     ics_products, 
+                     asthma_copd_medications,
+                     mdi,
+                     mdi_dpi,
+                     ics_not_laba
+              ),
+            by = "bnf_code") %>%
+  filter(
+    all_ics_products == "TRUE" |
+      high_dose_ics_products == "TRUE" | 
+      saba_inhaler_products == "TRUE" |
+      all_saba_ics_products == "TRUE" |
+      laba_products == "TRUE" |
+      lama_products == "TRUE" |
+      ics_products == "TRUE" |
+      asthma_copd_medications == "TRUE" |
+      mdi == "TRUE" |
+      mdi_dpi == "TRUE" |
+      ics_not_laba == "TRUE",
+    setting == 4,
+    # date > "2018-12-01"
+  ) %>%
+  group_by(practice_id, date) %>%
+  summarise(
+    all_ics_products = sum(items[all_ics_products == "TRUE"]),
+    high_dose_ics_products = sum(items[high_dose_ics_products == "TRUE"]),
+    saba_inhaler_products = sum(items[saba_inhaler_products == "TRUE"]),
+    all_saba_ics_products = sum(items[all_saba_ics_products == "TRUE"]),
+    laba_products = sum(items[laba_products == "TRUE"]),
+    lama_products = sum(items[lama_products == "TRUE"]),
+    ics_products = sum(items[ics_products == "TRUE"]),
+    asthma_copd_medications = sum(items[asthma_copd_medications == "TRUE"]),
+    mdi = sum(items[mdi == "TRUE"]),
+    mdi_dpi = sum(items[mdi_dpi == "TRUE"]),
+    ics_not_laba = sum(items[ics_not_laba =="TRUE"])
+  ) %>%
+  ungroup() %>%
+  full_join(practices_dates %>% 
+              select(practice_id, practice_name, date, setting), 
+            by = c('practice_id', 'date')) %>%
+  mutate(across(where(is.numeric), ~replace(., is.na(.), 0)),
+         year=format(as.POSIXct(date), "%Y")) %>%
+  left_join(QOF_all %>%
+              ungroup() %>%
+              rename(patients_any = patients_registered) %>%
+              mutate(patients_resp = asthma + COPD) %>% 
+              select(practice_id, patients_any, patients_resp, year),
+            by = c("practice_id", "year")) %>%
+  filter(setting == 4) %>%
+  drop_na() %>%
+  ungroup() %>%
+  arrange(practice_id, date) %>%
+  collect() -> categories_prac
+
+write_csv(categories_prac, path = paste(output_dir, 'categories_prac.csv', sep=''))
+
+```
+
+## Calculate number of items/patients at LSOA level
+```{r}
+# list of years
+year_list <- sort(unique(categories_prac$year))
+
+# loop through years and aggregate (avoid 'vector length exceeded' error)
+for(current_year in year_list){
+  
+  # calculate n items per category at lsoa level
+  categories_prac %>%
+    filter(year == current_year) %>%
+    rename(patients_any_prac = patients_any,
+           patients_resp_prac = patients_resp) %>% 
+    select(-patients_any_prac) %>%
+    left_join(OP_patients_all %>%
+                rename(patients_any_lsoa_prac = count) %>% 
+                select(practice_id, lsoa_id, patients_any_lsoa_prac, year),
+              by = c("practice_id", "year")) %>%
+    filter(!is.na(lsoa_id)) %>%
+    # collect() -> part1
+    # # # # # grouping for weighting
+    # part1 %>%
+    group_by(date, practice_id) %>%
+    mutate(patients_any_prac_sum = sum(patients_any_lsoa_prac)) %>%
+    ungroup() %>%
+    group_by(practice_id) %>%
+    filter(!patients_any_prac_sum < patients_resp_prac) %>%
+    ungroup() %>%
+    # collect() -> part2
+    # # # # # weighting
+    # part2 %>%
+    mutate(weighting_factor = patients_any_lsoa_prac/patients_any_prac_sum) %>%
+    mutate(
+      all_ics_products = all_ics_products*weighting_factor,
+      high_dose_ics_products = high_dose_ics_products*weighting_factor,
+      saba_inhaler_products = saba_inhaler_products*weighting_factor,
+      all_saba_ics_products = all_saba_ics_products*weighting_factor,
+      laba_products = laba_products*weighting_factor,
+      lama_products = lama_products*weighting_factor,
+      ics_products = ics_products*weighting_factor,
+      asthma_copd_medications = asthma_copd_medications*weighting_factor,
+      mdi = mdi*weighting_factor,
+      mdi_dpi = mdi_dpi*weighting_factor,
+      ics_not_laba = ics_not_laba*weighting_factor,
+      patients_resp_prac = patients_resp_prac*weighting_factor) %>%
+    # collect() -> part3
+    # # # # # aggregating to LSOA level
+    # part3 %>%
+    group_by(date, lsoa_id) %>%
+    summarise(
+      all_ics_products = sum(all_ics_products), 
+      high_dose_ics_products = sum(high_dose_ics_products), 
+      saba_inhaler_products = sum(saba_inhaler_products), 
+      all_saba_ics_products = sum(all_saba_ics_products), 
+      laba_products = sum(laba_products), 
+      lama_products = sum(lama_products), 
+      ics_products = sum(ics_products), 
+      asthma_copd_medications = sum(asthma_copd_medications), 
+      mdi = sum(mdi), 
+      mdi_dpi = sum(mdi_dpi),
+      ics_not_laba = sum(ics_not_laba),
+      patients_resp_lsoa = sum(patients_resp_prac),
+      patients_any_lsoa = sum(patients_any_lsoa_prac)) %>%
+    ungroup() %>%
+    collect() -> subset
+  
+  if(current_year == year_list[1]){
+    categories_lsoa <- subset
+  } else {
+    categories_lsoa <- rbind(categories_lsoa, subset)
+  }
+}
+
+categories_lsoa <- categories_lsoa %>% mutate(year=format(as.POSIXct(date), "%Y"))
+
+write_csv(categories_lsoa, path = paste(output_dir, 'categories_lsoa', sep=''))
+
+```
+
+
+## Calculate number of items/patients at LSOA level
+```{r}
+categories_prac %>%
+  select(-setting, -year) %>% # already filtered for correct setting at practice stage
+  left_join(practices_ccgs_dates %>%
+              select(practice_id, date, ccg) %>%
+              distinct(),
+            by = c('practice_id', 'date')) %>%
+  group_by(date, ccg) %>%
+  summarise(across(where(is.numeric), ~sum(.))) %>% # across can be 20x slower, but fast enough here
+  rename(ccg_id = ccg) %>%
+  left_join(ccg_names, by = "ccg_id") %>%
+  mutate(year=format(as.POSIXct(date), "%Y")) %>%
+  collect() -> categories_ccg
+
+write_csv(categories_ccg, path = paste(output_dir, 'categories_ccg', sep=''))
+
+```
+
+
+
+# Information from Open Prescribing FAQ
+https://openprescribing.net/faq/
+
+What is a prescription item?
+Items counts the number of times a medicine has been prescribed. It says nothing about how much of it has been prescribed (for that see quantity) as some presciptions will be for many weeks’ worth of treatment while others will be much smaller.
+
+For more detail see the NHS Digital FAQ (PDF)
+
+What does quantity mean?
+Quantity is the total amount of a medicine that has been prescribed, but the units used depend on the particular form the medicine is in:
+
+• Where the formulation is tablet, capsule, ampoule, vial etc the quantity will be the number of tablets, capsules, ampoules, vials etc
+
+• Where the formulation is a liquid the quantity will be the number of millilitres
+
+• Where the formulation is a solid form (eg. cream, gel, ointment) the quantity will be the number of grams
+
+• Where the formulation is inhalers the quantity is usually the number of inhalers (but there are occasionally inconsistencies here so exercise caution when analysing this data)
+
+Care must be taken when adding together quantities. Obviously quantities cannot be added across units. But even within a given unit it may not make sense to add together quantities of different preparations with different strengths and formulations.
+
+For more detail see the NHS Digital FAQ (PDF)
+
+Q: what is a unit??
+
+Measures implemented by open prescribing:
+https://openprescribing.net/measure/?tags=respiratory
+
+# Measures from NHSBSA
+
+Respiratory Dashboard Version: May 2019
+Comparator Descriptions and Specifications V3.1
+https://www.nhsbsa.nhs.uk/sites/default/files/2019-05/Respiratory%20SpecificationV3.1.pdf
+
+## High dose ICS items as a % of all ICS items 
+
+###Section 1: Introduction/Overview 
+####1.1 Title 
+High dose ICS items as a % of all ICS items 
+
+####1.2 Definition
+Identifying the level of 'high dose' ICS prescribing as a percentage of prescribing for all ICS products.
+
+####1.3 Reporting Level
+Practice level (aggregated to CCG).
+
+####1.4 Numerator
+Total number of "high dose" ICS items prescribed during a single month.
+
+Please refer to Appendix 2 (provided in a separate document) for the drug list for this numerator.
+
+####1.5 Denominator
+Total number of all ICS items prescribed during a single month.
+
+Please refer to Appendix 2 (provided in a separate document) for the drug list for this denominator.
+
+####1.6 Methodology 
+Numerator divided by denominator, presented as a percentage.
+
+###Section 2: Rationale 
+####2.1 Purpose
+Inhaled corticosteroids (ICS) are commonly prescribed for patients with COPD and asthma, although the risk of systemic side effects is greater when higher doses are used.
+
+Sometimes it is appropriate to continue this high dose long-term, but often patients can be "stepped-down" again if clinically appropriate.
+
+This metric highlights the variation in the number of patients in each CCG/GP practice who are prescribed a high dose steroid, allowing commissioners and prescribers to see how much variation exists.
+
+####2.2 Evidence and Policy Base
+National guidelines from NICE and BTS for asthma and COPD state that the patient should be maintained
+
+Already implemented on Open prescribing? 
+Yes: https://openprescribing.net/measure/icsdose/definition/
+
+Higher = "worse"
+
+```{r}
+# calculate High dose ICS items as a % of all ICS items	at practice level
+categories_prac %>%
+  group_by(practice_id, practice_name, date) %>%
+  summarise(measure = "icsdose",
+            org_type = "practice", # this is not necesarily true but is included to fill column
+            numerator = high_dose_ics_products,
+            denominator = all_ics_products,
+            calc_value = (numerator / denominator) * 100) %>%
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = practice_id,
+         org_name = practice_name) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> icsdose_prac
+
+# calculate High dose ICS items as a % of all ICS items	at CCG level
+categories_ccg %>%
+  group_by(ccg_id, ccg_name, date) %>%
+  summarise(measure = "icsdose",
+            org_type = "ccg", # this is not necesarily true but is included to fill column
+            numerator = high_dose_ics_products,
+            denominator = all_ics_products,
+            calc_value = (numerator / denominator) * 100) %>%
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = ccg_id,
+         org_name = ccg_name) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> icsdose_ccg
+
+# calculate High dose ICS items as a % of all ICS items	at LSOA level
+categories_lsoa %>%
+  group_by(lsoa_id, date) %>%
+  summarise(measure = "icsdose",
+            org_type = "lsoa", # this is not necesarily true but is included to fill column
+            numerator = high_dose_ics_products,
+            denominator = all_ics_products,
+            calc_value = (numerator / denominator) * 100) %>%
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = lsoa_id) %>%
+  mutate(org_name = org_id) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> icsdose_lsoa
+
+
+
+# calculate deciles for practices
+icsdose_prac %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> icsdose_deciles_prac
+
+
+# calculate deciles for ccgs
+icsdose_ccg %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> icsdose_deciles_ccg
+
+
+# calculate deciles for lsoas
+icsdose_lsoa %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> icsdose_deciles_lsoa
+
+
+# merge together so algorithm can read it 
+icsdose_deciles <- merge(icsdose_deciles_ccg %>%
+                           select(-median, -mean),
+                         icsdose_deciles_prac %>%
+                           select(-median, -mean),
+                         by = c("date","measure"),
+                         suffixes = c("_ccg","_prac"))
+
+```
+
+
+## Inhaled steroid prevention including ICS LABA
+
+###Section 1: Introduction / Overview 
+####1.1 Title 
+Inhaled steroid prevention including ICS LABA 
+
+####1.2 Definition
+Identifying the proportion of patients receiving 5 or fewer steroid inhalers including ICS LABA products. Figures are reported for a rolling 12 month period.
+
+####1.3 Reporting Level
+Practice level (aggregated to CCG).
+
+####1.4 Numerator
+Number of patients receiving 5 or fewer steroid inhalers including ICS LABA products within a rolling 12 month period.
+
+Please refer to Appendix 2 (provided in a separate document) for the drug list for this numerator.
+
+####1.5 Denominator 
+Total number of patients receiving any prescription items for steroid inhalers including ICS LABA products (see numerator for list) within a rolling 12 month period.
+
+####1.7 Methodology Numerator divided by denominator, presented as a percentage
+
+###Section 2: Rationale 
+####2.1 Purpose
+Steroid-containing inhalers are used as maintenance therapy for COPD and asthma. They are most likely to be effective if taken regularly. This metric shows the number of patients who have collected 5 or fewer prescriptions for preventer medication, and who might benefit from a medication review with respect to adherence.
+
+####2.2 Evidence and Policy Base
+Regular maintenance treatment is recommended by both NICE and BTS.
+
+2020 and 2015 are as the caclulation is done over a year (could be normalised for monthly with further calculation)
+
+!Update: ics_pppm = quantity of ICS products per person per month. If the yearly threshold for concern is 5 per year, this scales to = 0.417 per month (5/12). This is what should be flagged as an alarm in the algorithm later.
+
+**set threshold to 0.417, use calc_value for algorthm. Calc_value does not represent proportion as in other measures, but inhalers per person per month.
+
+lower = "worse"
+
+
+```{r}
+# calculate ics items per person per month at practice level
+categories_prac %>%
+  group_by(practice_id, practice_name, date) %>%
+  summarise(measure = "ics_pppm",
+            org_type = "practice", # this is not necesarily true but is included to fill column
+            numerator = all_ics_products,
+            denominator = patients_resp,
+            calc_value = (numerator / denominator)) %>%  # use calc_value for algorthm
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = practice_id,
+         org_name = practice_name) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> ics_pppm_prac
+
+# calculate ics items per person per month at CCG level
+categories_ccg %>%
+  group_by(ccg_id, ccg_name, date) %>%
+  summarise(measure = "ics_pppm",
+            org_type = "ccg", # this is not necesarily true but is included to fill column
+            numerator = all_ics_products,
+            denominator = patients_resp,
+            calc_value = (numerator / denominator)) %>%  # use calc_value for algorthm
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = ccg_id,
+         org_name = ccg_name) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> ics_pppm_ccg
+
+# calculate ics items per person per month at LSOA level
+categories_lsoa %>%
+  group_by(lsoa_id, date) %>%
+  summarise(measure = "ics_pppm",
+            org_type = "lsoa", # this is not necesarily true but is included to fill column
+            numerator = all_ics_products,
+            denominator = patients_resp_lsoa,
+            calc_value = (numerator / denominator)) %>%  # use calc_value for algorthm
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = lsoa_id) %>%
+  mutate(org_name = org_id) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> ics_pppm_lsoa
+
+
+
+# calculate deciles for practices
+ics_pppm_prac %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> ics_pppm_deciles_prac
+
+
+# calculate deciles for ccgs
+ics_pppm_ccg %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> ics_pppm_deciles_ccg
+
+
+# calculate deciles for lsoas
+ics_pppm_lsoa %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> ics_pppm_deciles_lsoa
+
+
+# merge together so algorithm can read it 
+ics_pppm_deciles <- merge(ics_pppm_deciles_ccg %>%
+                           select(-median, -mean),
+                         ics_pppm_deciles_prac %>%
+                           select(-median, -mean),
+                         by = c("date","measure"),
+                         suffixes = c("_ccg","_prac"))
+
+```
+
+## LABA to ICS ratio (novel measure)
+
+###Section 1: Introduction / Overview 
+####1.1 Title 
+LABA to ICS ratio
+
+####1.2 Definition
+The number of prescriptions written for LABA for each ICS prescription (not including LABA).
+
+####1.3 Reporting Level
+Practice/CCG/LSOA level.
+
+####1.4 Numerator
+No. of prescriptions written for LABA.
+
+####1.5 Denominator 
+No. of prescriptions written for ICS, but not including LABA.
+
+####1.6 Methodology 
+Numerator divided by denominator, presented as a percentage.
+
+###Section 2: Rationale 
+####2.1 Purpose
+During COVID, it is likely that many first choice inhalers were unavailable. It is likely that the most common first choice, ICS, would have been substituted with LABA.  
+
+####2.2 Evidence and Policy Base
+Discussion with GP.
+
+Higher = "worse" (more substitution)
+
+```{r}
+# calculate LABA to ICS ratio at practice level
+categories_prac %>%
+  group_by(practice_id, practice_name, date) %>%
+  summarise(measure = "laba_ics",
+            org_type = "practice", # this is not necesarily true but is included to fill column
+            numerator = laba_products,
+            denominator = ics_not_laba,
+            calc_value = (numerator / denominator)) %>%
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = practice_id,
+         org_name = practice_name) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> laba_ics_prac
+
+# calculate LABA to ICS ratio	at CCG level
+categories_ccg %>%
+  group_by(ccg_id, ccg_name, date) %>%
+  summarise(measure = "laba_ics",
+            org_type = "ccg", # this is not necesarily true but is included to fill column
+            numerator = laba_products,
+            denominator = ics_not_laba,
+            calc_value = (numerator / denominator)) %>%
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = ccg_id,
+         org_name = ccg_name) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> laba_ics_ccg
+
+# calculate LABA to ICS ratio at LSOA level
+categories_lsoa %>%
+  group_by(lsoa_id, date) %>%
+  summarise(measure = "laba_ics",
+            org_type = "lsoa", # this is not necesarily true but is included to fill column
+            numerator = laba_products,
+            denominator = ics_not_laba,
+            calc_value = (numerator / denominator)) %>%
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = lsoa_id) %>%
+  mutate(org_name = org_id) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> laba_ics_lsoa
+
+
+
+# calculate deciles for practices
+laba_ics_prac %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> laba_ics_deciles_prac
+
+
+# calculate deciles for ccgs
+laba_ics_ccg %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> laba_ics_deciles_ccg
+
+
+# calculate deciles for lsoas
+laba_ics_lsoa %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> laba_ics_deciles_lsoa
+
+
+# merge together so algorithm can read it 
+laba_ics_deciles <- merge(laba_ics_deciles_ccg %>%
+                           select(-median, -mean),
+                         laba_ics_deciles_prac %>%
+                           select(-median, -mean),
+                         by = c("date","measure"),
+                         suffixes = c("_ccg","_prac"))
+
+```
+
+## Excess SABA prescribing 
+
+###Section 1: Introduction / Overview 
+####1.1 Title 
+Excess SABA prescribing 
+
+####1.2 Definition
+Identifying the proportion of patients prescribed preventer inhalers without antimuscarinics who were also prescribed 6 or more SABA inhalers. Figures are reported for a rolling 12 month period.
+
+####1.3 Reporting Level
+Practice level (aggregated to CCG).
+
+####1.4 Numerator
+No. patients prescribed 6 or more SABA inhalers in a 12 month period, who were also prescribed a preventer inhaler but not prescribed an antimuscarinic.
+
+Please refer to Appendix 2 (provided in a separate document) for the drug lists for this numerator.
+
+####1.5 Denominator 
+No. of patients prescribed a preventer inhaler (see numerator) but not an antimuscarinic (see numerator).
+
+####1.6 Methodology 
+Numerator divided by denominator, presented as a percentage.
+
+###Section 2: Rationale 
+####2.1 Purpose
+####2.2 Evidence and Policy Base
+
+Already a measure on Open Prescribing?
+Similar - SABA as a proportion of ICS inhalers and SABA inhalers
+https://openprescribing.net/measure/saba/definition/
+
+Use simple OP measure for this one.
+
+Higher = "worse"
+
+```{r}
+# calculate excess SABA prescribing at practice level
+categories_prac %>%
+  group_by(practice_id, practice_name, date) %>%
+  summarise(measure = "saba",
+            org_type = "practice", # this is not necesarily true but is included to fill column
+            numerator = saba_inhaler_products,
+            denominator = all_saba_ics_products,
+            calc_value = (numerator / denominator) * 100) %>%
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = practice_id,
+         org_name = practice_name) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> saba_prac
+
+# calculate excess SABA prescribing at CCG level
+categories_ccg %>%
+  group_by(ccg_id, ccg_name, date) %>%
+  summarise(measure = "saba",
+            org_type = "ccg", # this is not necesarily true but is included to fill column
+            numerator = saba_inhaler_products,
+            denominator = all_saba_ics_products,
+            calc_value = (numerator / denominator) * 100) %>%
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = ccg_id,
+         org_name = ccg_name) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> saba_ccg
+
+# calculate excess SABA prescribing at LSOA level
+categories_lsoa %>%
+  group_by(lsoa_id, date) %>%
+  summarise(measure = "saba",
+            org_type = "lsoa", # this is not necesarily true but is included to fill column
+            numerator = saba_inhaler_products,
+            denominator = all_saba_ics_products,
+            calc_value = (numerator / denominator) * 100) %>%
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = lsoa_id) %>%
+  mutate(org_name = org_id) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> saba_lsoa
+
+
+
+# calculate deciles for practices
+saba_prac %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> saba_deciles_prac
+
+
+# calculate deciles for ccgs
+saba_ccg %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> saba_deciles_ccg
+
+
+# calculate deciles for lsoas
+saba_lsoa %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> saba_deciles_lsoa
+
+
+# merge together so algorithm can read it 
+saba_deciles <- merge(saba_deciles_ccg %>%
+                           select(-median, -mean),
+                         saba_deciles_prac %>%
+                           select(-median, -mean),
+                         by = c("date","measure"),
+                         suffixes = c("_ccg","_prac"))
+
+```
+
+
+## OP Environmental measures
+
+The NHS has committed to reducing its carbon footprint by 51% by 2025 to meet the target in the Climate Change Act, including a shift to dry powdered inhalers (DPI) to deliver a reduction of 4%. DPIs and other newer types of inhalers like soft mist inhalers are less harmful to the enviroment than traditional metered dose inhalers (MDIs) and the NHS long term plan supports the use of these inahlers where it is clinically appropriate. NICE has produced a inhaler decision aid to faciltiate discussion about inhaler options.
+
+https://openprescribing.net/measure/environmental_inhalers/
+https://openprescribing.net/measure/environmental_inhalers/definition/
+
+
+```{r}
+# calculate % environmentally damaging inhalers at practice level
+categories_prac %>%
+  group_by(practice_id, practice_name, date) %>%
+  summarise(measure = "environmental_inhalers",
+            org_type = "practice", # this is not necesarily true but is included to fill column
+            numerator = mdi,
+            denominator = mdi_dpi,
+            calc_value = (numerator / denominator) * 100) %>%
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = practice_id,
+         org_name = practice_name) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> environmental_inhalers_prac
+
+# calculate % environmentally damaging inhalers at CCG level
+categories_ccg %>%
+  group_by(ccg_id, ccg_name, date) %>%
+  summarise(measure = "environmental_inhalers",
+            org_type = "ccg", # this is not necesarily true but is included to fill column
+            numerator = mdi,
+            denominator = mdi_dpi,
+            calc_value = (numerator / denominator) * 100) %>%
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = ccg_id,
+         org_name = ccg_name) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> environmental_inhalers_ccg
+
+# calculate % environmentally damaging inhalers at LSOA level
+categories_lsoa %>%
+  group_by(lsoa_id, date) %>%
+  summarise(measure = "environmental_inhalers",
+            org_type = "lsoa", # this is not necesarily true but is included to fill column
+            numerator = mdi,
+            denominator = mdi_dpi,
+            calc_value = (numerator / denominator) * 100) %>%
+  ungroup() %>%
+  filter(across(where(is.numeric), ~!is.infinite(.)),
+         across(where(is.numeric), ~!is.na(.))) %>%
+  rename(org_id = lsoa_id) %>%
+  mutate(org_name = org_id) %>%
+  group_by(date) %>%
+  mutate(percentile = ntile(calc_value, 100),
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile) %>%
+  arrange(date, percentile) %>%
+  ungroup() %>%
+  collect() -> environmental_inhalers_lsoa
+
+
+
+# calculate deciles for practices
+environmental_inhalers_prac %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> environmental_inhalers_deciles_prac
+
+
+# calculate deciles for ccgs
+environmental_inhalers_ccg %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> environmental_inhalers_deciles_ccg
+
+
+# calculate deciles for lsoas
+environmental_inhalers_lsoa %>%
+  group_by(date, measure) %>%
+  summarise(median = median(calc_value),
+            mean = mean(calc_value),
+            enframe(quantile(calc_value, seq(0.1, 0.9, by = 0.1), na.rm = TRUE), 
+                    "quantile", "quantile_val")) %>%
+  pivot_wider(names_from= quantile, values_from = quantile_val) %>%
+  select(date, measure, median, mean, "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%") %>%
+  arrange(date) %>%
+  collect() -> environmental_inhalers_deciles_lsoa
+
+
+# merge together so algorithm can read it 
+environmental_inhalers_deciles <- merge(environmental_inhalers_deciles_ccg %>%
+                           select(-median, -mean),
+                         environmental_inhalers_deciles_prac %>%
+                           select(-median, -mean),
+                         by = c("date","measure"),
+                         suffixes = c("_ccg","_prac"))
+
+```
+
+
+
+
+
+
+##Export as csv
+```{r}
+# write practice
+OP_measures_prac <- rbind(icsdose_prac, ics_pppm_prac, laba_ics_prac, saba_prac, environmental_inhalers_prac) %>%
+  filter_if(~is.numeric(.), all_vars(!is.infinite(.))) %>%
+  filter_if(~is.numeric(.), all_vars(!is.na(.))) %>%
+  mutate(
+         year=format(as.POSIXct(date), "%Y")
+         )
+
+write_csv(OP_measures_prac, path = paste(output_dir,"OP_measures_prac.csv", sep=''))
+
+# write ccg
+OP_measures_ccg <- rbind(icsdose_ccg, ics_pppm_ccg, laba_ics_ccg, saba_ccg, environmental_inhalers_ccg) %>%
+  filter_if(~is.numeric(.), all_vars(!is.infinite(.))) %>%
+  filter_if(~is.numeric(.), all_vars(!is.na(.))) %>%
+  mutate(
+         year=format(as.POSIXct(date), "%Y")
+         )
+
+
+write_csv(OP_measures_ccg, path = paste(output_dir,"OP_measures_ccg.csv", sep=''))
+
+# write lsoa
+OP_measures_lsoa <- rbind(icsdose_lsoa, ics_pppm_lsoa, laba_ics_lsoa, saba_lsoa, environmental_inhalers_lsoa) %>%
+  filter_if(~is.numeric(.), all_vars(!is.infinite(.))) %>%
+  filter_if(~is.numeric(.), all_vars(!is.na(.))) %>%
+  mutate(
+         year=format(as.POSIXct(date), "%Y")
+         )
+
+write_csv(OP_measures_lsoa, path = paste(output_dir,"OP_measures_lsoa.csv", sep=''))
+
+# write deciles
+OP_deciles <- rbind(icsdose_deciles, ics_pppm_deciles, laba_ics_deciles, saba_deciles, environmental_inhalers_deciles) %>%
+  filter_if(~is.numeric(.), all_vars(!is.infinite(.))) %>%
+  filter_if(~is.numeric(.), all_vars(!is.na(.))) %>%
+  mutate(
+         year=format(as.POSIXct(date), "%Y")
+         )
+
+write_csv(OP_deciles, path = paste(output_dir, "OP_deciles.csv", sep=""), col_names = FALSE)
+
+# write deciles LSOA
+OP_deciles_lsoa <- rbind(icsdose_deciles_lsoa, ics_pppm_deciles_lsoa, laba_ics_deciles_lsoa, saba_deciles_lsoa, environmental_inhalers_deciles_lsoa) %>%
+  filter_if(~is.numeric(.), all_vars(!is.infinite(.))) %>%
+  filter_if(~is.numeric(.), all_vars(!is.na(.))) %>%
+  mutate(
+         year=format(as.POSIXct(date), "%Y")
+         )
+
+write_csv(OP_deciles_lsoa, path = paste(output_dir, "OP_deciles_lsoa.csv", sep=""), col_names = FALSE)
+
+```
+
+
+## Check practice deciles against cgg deciles
+```{r}
+# prac
+deciles_plot_prac <- environmental_inhalers_deciles_prac %>%
+  pivot_longer(cols=c(3:13)) %>%
+  mutate(grouping = ifelse(grepl("median|mean", name), name, "deciles"))
+
+plt <- ggplot(deciles_plot_prac, 
+              mapping= aes(x = as.Date(date), 
+                           y = value,
+                           group=factor(name),
+                           color = factor(grouping),
+                           linetype = factor(grouping)))
+plt + geom_line() +
+  scale_linetype_manual(values=c("dotted", "longdash", "dashed")) +
+  scale_color_manual(values=c("blue", "red", "blue")) +
+  ylim(25, 80) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(),legend.title = element_blank()) +
+  labs(title = "Percentiles for individual GP practices", x = "Month", y = "%") +
+  scale_x_date(date_labels = "%Y")
+
+#ccg
+deciles_plot_ccg <- environmental_inhalers_deciles_ccg %>%
+  pivot_longer(cols=c(3:13)) %>%
+  mutate(grouping = ifelse(grepl("median|mean", name), name, "deciles"))
+
+plt <- ggplot(deciles_plot_ccg, 
+              mapping= aes(x = as.Date(date), 
+                           y = value,
+                           group=factor(name),
+                           color = factor(grouping),
+                           linetype = factor(grouping)))
+plt + geom_line() +
+  scale_linetype_manual(values=c("dotted", "longdash", "dashed")) +
+  scale_color_manual(values=c("blue", "red", "blue")) +
+  ylim(25, 80) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(),legend.title = element_blank()) +
+  labs(title = "Percentiles for CCGs", x = "Month", y = "%") +
+  scale_x_date(date_labels = "%Y")
+
+```
+
+
+
+## Check measures against those from OP
+```{r}
+# calculate High dose ICS items as a % of all ICS items	at practice level
+OP_prescriptions %>%
+  left_join(
+    OP_codes_all_measures %>% select(bnf_code, high_dose_ics_products, all_ics_products),
+    by = "bnf_code"
+  ) %>%
+  filter(high_dose_ics_products == "TRUE" |
+           all_ics_products == "TRUE",
+         setting == 4) %>%
+  group_by(practice_id, practice_name, date) %>%
+  summarise(
+    measure = "icsdose",
+    org_type = "practice", # this is not necesarily true but is included to fill column
+    numerator = sum(items[high_dose_ics_products == "TRUE"]),
+    denominator = sum(items[all_ics_products == "TRUE"]),
+    calc_value = (numerator / denominator) * 100) %>%
+  rename(org_id = practice_id,
+         org_name = practice_name) %>%
+  group_by(date) %>%
+  mutate(percentile_ntile = ntile(calc_value, 100),
+         percent_rank = percent_rank(calc_value),
+         dif = as.integer(percent_rank*100) - percentile_ntile,
+         n=n()) %>%
+  select(measure, org_type, org_id, org_name, date, numerator, denominator, calc_value, percentile_ntile, percent_rank, dif, n) %>%
+  arrange(date, dif) %>%
+  collect() -> percentile_test
+
+
+hist(percentile_test$denominator)
+hist(percentile_test$percentile_ntile)
+hist(percentile_test$percent_rank)
+lines(percentile_test$percentile[percentile_test$org_id=="Y01962"])
+
+
+single_prac_example <- read.csv("../Pythoncode/data/get_percentiles_for/single_prac_example.csv")
+
+# check icsdose
+
+unique(single_prac_example$measure)
+OP_icsdose <- single_prac_example %>% 
+  filter(measure == "icsdose") %>% 
+  rename(OP_percentile = percentile) %>%
+  left_join(percentile_test %>% select(org_id, percentile_ntile, date) %>%
+              mutate(date=as.character(date)), by = c("org_id", "date"))
+
+
+for_plot <- OP_icsdose %>% select(date, percentile_ntile, OP_percentile) %>%
+  pivot_longer(cols= c(percentile_ntile, OP_percentile))
+
+for_plot <- na.omit(for_plot)
+
+plt <- ggplot(data = for_plot, 
+              aes(x = date, 
+                  y = value,
+                  group = name,
+                  color = name))
+plt + geom_line()
+
+```
+
+```{r}
+
+hist(environmental_inhalers_prac$denominator)
+lines(environmental_inhalers_prac$percentile[percentile_test$org_id=="Y01962"])
+
+
+single_prac_example <- read.csv("../Pythoncode/data/get_percentiles_for/single_prac_example.csv")
+
+# check icsdose
+
+unique(single_prac_example$measure)
+
+OP_environmental_inhalers <- single_prac_example %>% 
+  filter(measure == "environmental_inhalers") %>% 
+  rename(OP_percentile = percentile) %>%
+  left_join(environmental_inhalers_prac %>% select(org_id, percentile, date) %>% mutate(date=as.character(date)), by = c("org_id", "date"))
+
+
+for_plot <- OP_environmental_inhalers %>% select(date, percentile, OP_percentile) %>%
+  pivot_longer(cols= c(percentile, OP_percentile))
+
+for_plot <- na.omit(for_plot)
+
+plt <- ggplot(data = for_plot, 
+              aes(x = date, 
+                  y = value,
+                  group = name,
+                  color = name))
+plt + geom_line()
+
+```
+
+
+
+```{r}
+# Investigate number of ICS per person per practice which are velow threshold 
+ics_pppm_prac %>%
+  filter(!calc_value == Inf) %>% 
+  summarise(below_thresh = sum(calc_value < 0.417, na.rm = TRUE),
+            tot = n(),
+            prop = below_thresh/tot)
+hist(ics_pppm_prac$calc_value)
+hist(ics_pppm_prac$calc_value[ics_pppm_prac$calc_value <1])
+```
+
+# test 'sum' function
+```{r}
+
+df <- data.frame("somevariable" = c("a","a","b","b","c","c","d","d","e","e"), 
+                 "someothervariable" = c(rep("a",10)),
+                 "somevalue"=c(1:10))
+
+df %>%
+  summarise(sum_a = sum(somevalue[somevariable=="a"]),
+            sum_e = sum(somevalue[somevariable=="e"]))
+
+# numerator = sum(items[high_dose_ics_products == "TRUE"])
+
+# add all variable e
+df %>%
+  summarise(sum_a = sum(somevalue[somevariable=="a"]),
+            sum_e = sum(somevalue[somevariable=="e"]))
+
+# count the number below x
+df %>%
+  summarise(n_below_5 = sum(somevalue <= 6))
+
+# count the number below x based on y
+df %>%
+  summarise(n_below_5 = sum(somevalue <= 6),
+            total = n())
+
+
+df %>% filter(somevariable == "a") %>%
+  summarise(sum(somevalue))
+
+df %>%
+  summarise(sum(somevalue[somevariable == "a"]))
+
+
+```
+
+
+```{r}
+OP_deciles_original <- read_csv("../Pythoncode/data/allmeasuresdeciles_12_16.csv")
+
+ccg_names_new <- OP_ccg_all_years
+st_geometry(ccg_names_new) <- NULL
+ccg_names_new <- ccg_names_new %>% select(ccg_id, ccg_name) %>% unique()
+ccg_names_new <- na.omit(ccg_names_new)
+ccg_names_new <- ccg_names_new[!duplicated(ccg_names_new[1]),]
+```
+
+
