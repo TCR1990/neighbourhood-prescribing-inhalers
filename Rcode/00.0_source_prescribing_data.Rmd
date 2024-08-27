@@ -18,9 +18,10 @@ An internet connection is required to run this code.
 
 
 ## Code required:
-00.1_get_OP_codes.R
+00.1_get_OP_codes_from_file.R OR 00.1_get_OP_codes_from_scrape.R
 00.2_get_NHSBSA_codes.R
 00.3_get_BNF_info_from_OP.R
+00.4_get_OP_prescriptions.R
 
 ## Libraries required:
 
@@ -34,13 +35,6 @@ An internet connection is required to run this code.
 Load libraries, import script files, and set the working directory to the folder containing the workbook:
 
 ```{r}
-# library(stringr)
-# library(tidyverse) 
-# library(DBI) 
-# library(tmap)
-# library(RCurl)
-# library(sf)
-
 # get directory of current script and set it as working directory
 filedir <- dirname(rstudioapi::getSourceEditorContext()$path)
 setwd(filedir)

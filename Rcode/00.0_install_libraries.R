@@ -1,0 +1,16 @@
+# Install required libraries
+
+install.packages('DBI')
+install.packages('dplyr')
+install.packages('ggpubr')
+install.packages('gridExtra')
+install.packages('htm2txt')
+install.packages('httr')
+install.packages('jsonlite')
+install.packages('mgsub')
+install.packages('RCurl')
+install.packages('readxl')
+install.packages('sf')
+install.packages('stringr')
+install.packages('tidybayes')
+install.packages('tidyverse')
