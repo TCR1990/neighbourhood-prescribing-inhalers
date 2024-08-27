@@ -251,13 +251,12 @@ total <- 0
 data_to_parse = FALSE
 
 year_now <- as.numeric(format(Sys.Date(), "%Y"))
-month_now <- as.numeric(format(Sys.Date(), "%m"))
 
 # Dates to loop through. OP records only go back 5 years - see options below
 
 # years = c("2015", "2016", "2017", "2018", "2019", "2020") # will not run as > 5 years ago
 
-years <- as.character(seq(todays_date-5, todays_date)) # from 5 years ago until present day...
+years <- as.character(seq(year_now-5, year_now)) # from 5 years ago until present day...
 
 # years = c("2019", "2020") # No point going back further as records only go back 5 years...
 
