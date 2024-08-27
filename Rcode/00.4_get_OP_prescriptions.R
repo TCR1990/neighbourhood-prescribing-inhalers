@@ -22,7 +22,8 @@ library(tidyverse)
 library(DBI)
 library(httr)
 library(jsonlite)
-
+library(RSQLite)
+library(lubridate)
 #### Workspace setup ####
 # log existing variables
 existing_vars = ls()
@@ -249,11 +250,18 @@ total <- 0
 
 data_to_parse = FALSE
 
-# Dates to loop through
-# years = c("2015", "2016", "2017", "2018", "2019", "2020")
-years = c("2019", "2020") # No point going back further as records only go back 5 years...
+year_now <- as.numeric(format(Sys.Date(), "%Y"))
+month_now <- as.numeric(format(Sys.Date(), "%m"))
 
-months = c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12")
+# Dates to loop through. OP records only go back 5 years - see options below
+
+# years = c("2015", "2016", "2017", "2018", "2019", "2020") # will not run as > 5 years ago
+
+years <- as.character(seq(todays_date-5, todays_date)) # from 5 years ago until present day...
+
+# years = c("2019", "2020") # No point going back further as records only go back 5 years...
+
+months = c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12") # will automaticall skip months outside of time range
 
 # Count the number of calls for messaging info
 num_calls <- dim(BNF_codes_measures)[1] * length(months) * length(years)
@@ -273,9 +281,12 @@ for (row_n in 1:dim(BNF_codes_measures)[1]) {
   for (year in years) {
     for (month in months) {
       month_counter = month_counter + 1
+      
       # Construct date and continue if its before current date
       date = paste(year, month, "01", sep = "-")
-      if (date < Sys.Date()) {
+      
+      # Skip if in future or > 5 years in past
+      if ((date < Sys.Date()) & date > Sys.Date()-years(5))  {
         # Count total and print job number
         total = total + 1
 
