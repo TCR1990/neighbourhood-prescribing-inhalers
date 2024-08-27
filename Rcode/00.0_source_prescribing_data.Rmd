@@ -110,8 +110,13 @@ source("./00.3_get_BNF_info_from_OP.R", echo=FALSE) # Calls OpenPrescribing.net 
 
 ## 3. Collect Prescribing data from Open Prescribing.net
 
-WARNING: this section could take ~18 hours to run.
+WARNING: this section could take ~9 hours per year to run (can collect up to 5 years in the past).
 ```{r}
+
+# If OP_prescriptions.csv does not already exist in ./data, scrape the Open Prescribing API
+
+if (!file.exists("./data/OP_prescriptions.csv")){
+  
 # Start time
 scrape_start_time <- Sys.time()
 
@@ -125,50 +130,7 @@ scrape_end_time <- Sys.time()
 # Print time taken
 print(paste0("Started at:       ", scrape_start_time))
 print(paste0("Finished at:      ", scrape_end_time))
+}
 
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-## 2. Source and sort British National Formulary (BNF) drug identifier codes
-
-```{r}
-
-
-cat(paste("\n\nFailed: ", failed))
-cat(paste("\nSuccessful: ", success))
-cat(paste("\nTotal: ", total))
-cat(start_time)
-end_time <- paste("\nJob finished: ", Sys.time(), ".", sep = "")
-cat(paste("\n", end_time))
-
-```
-
 
