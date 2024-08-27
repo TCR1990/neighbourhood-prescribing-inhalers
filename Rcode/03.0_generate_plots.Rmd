@@ -1,0 +1,1076 @@
+---
+title: "# Identifying unsafe patterns of asthma inhaler prescriptions in the UK"
+author: "Thomas Richards"
+date: "10/06/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(dev = 'png')
+knitr::opts_chunk$set(dpi=500)
+# knitr::opts_chunk$set(dpi=300,fig.width=7)
+```
+
+
+
+```{r}
+library(stringr)
+library(tidyverse)
+# library(DBI) 
+# library(tmap)
+# library(RCurl)
+# library(sf)
+# library(PerformanceAnalytics)
+# library(Hmisc)
+# library(corrplot)
+library(ggpubr)
+library(gridExtra)
+# library(hablar)
+# library(permute)
+# library(fst)
+# library(readxl)
+# 
+# 
+# # devtools::install_github("zeehio/facetscales")
+# library(scales)
+# # library(facetscales)
+library(tidybayes)
+# library(ggrepel)
+
+```
+
+
+
+
+```{r}
+# get directory of current script and set it as working directory
+filedir <- dirname(rstudioapi::getSourceEditorContext()$path)
+setwd(filedir)
+getwd()
+
+# load BNF code data
+BNF_codes_measures <- read.csv("./data/BNF_codes_measures.csv")
+
+
+# load the data
+OP_prescriptions <- read.csv("./data/OP_prescriptions.csv") %>%
+  filter(setting == 4,
+         bnf_code %in% BNF_codes_measures$bnf_code) %>%
+  mutate(ccg = gsub('.0', 'E', ccg, fixed = TRUE),
+         ccg = ifelse(ccg == 112, '16C', ccg),
+         date = as.POSIXct(date, format="%Y-%m-%d"),
+         year=format(date, "%Y"),
+         month=format(date, "%m"),
+         year_month=format(date, "%Y-%m")) 
+
+
+
+# load("./data/OP_ccg_all_years.RData")
+# QOF_all <- read.csv("./data/QOF_all.csv")
+# BNF_codes_measures <- read.csv("./data/BNF_codes_measures.csv")
+# ccg_names <- OP_ccg_all_years
+# st_geometry(ccg_names) <- NULL
+# ccg_names <- ccg_names %>% select(ccg_id, ccg_name) %>% unique()
+# ccg_names <- na.omit(ccg_names)
+# ccg_names <- ccg_names[!duplicated(ccg_names[1]),]
+# 
+# # connect to the database
+# db <- DBI::dbConnect(RSQLite::SQLite(), dbname="./data/OP_prescriptions_all_measures.sqlite")
+
+# Make a new table which has useable date formats
+# OP_prescriptions <- OP_prescriptions_all_measures %>%
+#   filter(setting ==4) %>%
+#   mutate(date = as.POSIXct(date, format="%Y-%m-%d"),
+#          year=format(date, "%Y"),
+#          month=format(date, "%m"),
+#          year_month=format(date, "%Y-%m"))
+# %>%
+#   mutate(product_id = substring(bnf_code, 0, 11)) %>%
+#   left_join(BNF_codes_measures, copy = TRUE)
+
+# dbDisconnect(db)
+ 
+
+
+
+IMD_all <- read.csv("./data/IMD_all.csv")
+
+# IMD <- read.csv("./data/IMD/imd2019lsoa.csv")
+#  
+# IMD_all <- IMD %>%
+#   filter(Indices.of.Deprivation == "a. Index of Multiple Deprivation (IMD)") %>%
+#   pivot_wider(id_cols = FeatureCode, values_from = Value, names_from = Measurement) %>%
+#   rename(lsoa_id = FeatureCode,
+#          IMD_rank = Rank,
+#          IMD_score = Score,
+#          IMD_decile_rank = "Decile ") %>%
+#   mutate(IMD_P_rank = ntile(IMD_score, 100)) # calculate percentile rank
+
+# ## Get plot column to associate LSOA with Public Health England Region
+# # LSOA > practice
+# LSOA_level <- OP_patients %>% select(practice_id, lsoa_id) %>% unique()
+# 
+# # practice > CCG
+# practice_level <- OP_practices %>% 
+#   filter(setting == 4) %>%
+#   rename(ccg_code = ccg) %>%
+#   select(ccg_code, practice_id) %>% 
+#   left_join(LSOA_level, by = "practice_id")
+# 
+# test <- practice_level %>% drop_na()
+# 
+# # CCG to NHS region: https://geoportal.statistics.gov.uk/datasets/888dc5cc66ba4ad9b4d935871dcce251_0
+# # For link below, click download > spreadsheet
+# url<-"https://opendata.arcgis.com/datasets/888dc5cc66ba4ad9b4d935871dcce251_0.csv"
+# # download.file(url, "./data/ccg_regional/ccg_regional.csv", mode = "wb")
+# 
+# # NHS England (Region, Local office) and NHS England (Region)
+# ccg_regional <- read.csv("./data/ccg_regional/ccg_regional.csv") %>%
+#   select(CCG20CDH, NHSER20CD, NHSER20CDH, NHSER20NM) %>%
+#   rename(ccg_code = CCG20CDH,
+#          region_code = NHSER20CD,
+#          region_name = NHSER20NM) %>%
+#   left_join(practice_level, by="ccg_code")
+# 
+# missing <- OP_lsoa_sf$lsoa_id[!(OP_lsoa_sf$lsoa_id %in% ccg_regional$lsoa_id)] 
+# 
+# print(paste("Note: ", length(missing), " LSOA IDs of ", length(unique(OP_lsoa_sf$lsoa_id)), " not included at regional level", sep=""))
+# 
+# # For boundaries: https://geoportal.statistics.gov.uk/datasets/nhs-england-regions-april-2020-boundaries-en-buc
+# # For link below, click download > shapefile
+# url<-"https://opendata.arcgis.com/datasets/5e33fd1436114a19b335ed07076a4c5b_0.zip?outSR=%7B%22latestWkid%22%3A27700%2C%22wkid%22%3A27700%7D"
+# zip_file<-"./data/ccg_regional/NHS_England_Regions__April_2020__Boundaries_EN_BUC-shp.zip"
+# # download.file(url, zip_file, mode = "wb")
+# unzipped_files <- unzip(zip_file, exdir = "./data/ccg_regional/")
+# 
+# NHS_regional_sf <- st_read(unzipped_files[grep('.shp', unzipped_files)]) %>%
+#   select(nhser20cd, nhser20nm, geometry) %>%
+#   rename(region_code = nhser20cd,
+#          region_name = nhser20nm,
+#          geom = geometry)
+# 
+# st_geometry(NHS_regional_sf) <- "geom"
+# NHS_regional_sf <- st_make_valid(NHS_regional_sf)
+# 
+# # Output plot directory
+# output_dir <- './Paper_1/'
+output_dir_data <- './data/'
+output_dir_plots <- './plots/'
+# 
+# practices_dates <- read.csv(paste(output_dir_data, 'practices_dates.csv', sep='')) %>%
+#   mutate(date = as.POSIXct(date, format="%Y-%m-%d"),
+#          year=format(date, "%Y"),
+#          month=format(date, "%m"),
+#          year_month=format(date, "%Y-%m"))
+# 
+# lsoa_dates <- read.csv(paste(output_dir_data, 'lsoa_dates.csv', sep='')) %>%
+#   mutate(date = as.POSIXct(date, format="%Y-%m-%d"),
+#          year=format(date, "%Y"),
+#          month=format(date, "%m"),
+#          year_month=format(date, "%Y-%m"))
+# 
+# practices_ccgs_dates <- read.csv(paste(output_dir_data, 'practices_ccgs_dates.csv', sep='')) %>%
+#   mutate(date = as.POSIXct(date, format="%Y-%m-%d"),
+#          year=format(date, "%Y"),
+#          month=format(date, "%m"),
+#          year_month=format(date, "%Y-%m"))
+
+categories_prac <- read.csv(paste(output_dir_data, 'categories_prac.csv', sep='')) %>%
+  mutate(date = as.POSIXct(date, format="%Y-%m-%d"),
+         year=format(date, "%Y"),
+         month=format(date, "%m"),
+         year_month=format(date, "%Y-%m"))
+
+categories_lsoa <- read.csv(paste(output_dir_data, 'categories_lsoa.csv', sep='')) %>%
+  mutate(date = as.POSIXct(date, format="%Y-%m-%d"),
+         year=format(date, "%Y"),
+         month=format(date, "%m"),
+         year_month=format(date, "%Y-%m"))
+# 
+# categories_ccg <- read.csv(paste(output_dir_data, 'categories_ccg', sep='')) %>%
+#   mutate(date = as.POSIXct(date, format="%Y-%m-%d"),
+#          year=format(date, "%Y"),
+#          month=format(date, "%m"),
+#          year_month=format(date, "%Y-%m"))
+# 
+# OP_measures_prac <- read.csv(paste(output_dir_data,"OP_measures_prac.csv", sep='')) %>%
+#   mutate(date = as.POSIXct(date, format="%Y-%m-%d"),
+#          year=format(date, "%Y"),
+#          month=format(date, "%m"),
+#          year_month=format(date, "%Y-%m"))
+# 
+# OP_measures_ccg <- read.csv(paste(output_dir_data,"OP_measures_ccg.csv", sep='')) %>%
+#   mutate(date = as.POSIXct(date, format="%Y-%m-%d"),
+#          year=format(date, "%Y"),
+#          month=format(date, "%m"),
+#          year_month=format(date, "%Y-%m"))
+# 
+OP_measures_lsoa <- read.csv(paste(output_dir_data,"OP_measures_lsoa.csv", sep='')) %>%
+  mutate(date = as.POSIXct(date, format="%Y-%m-%d"),
+         year=format(date, "%Y"),
+         month=format(date, "%m"),
+         year_month=format(date, "%Y-%m"))
+# 
+# OP_deciles <- read.csv(paste(output_dir_data, "OP_deciles.csv", sep=""))
+# 
+# OP_deciles_lsoa <- read.csv(paste(output_dir_data, "OP_deciles_lsoa.csv", sep=""))
+# 
+# reviews_prac <- read.csv(paste(output_dir_data, "reviews_prac.csv", sep=""))
+# reviews_lsoa <- read.csv(paste(output_dir_data, "reviews_lsoa.csv", sep=""))
+
+
+time_start <- "2018-12-01"
+
+```
+
+
+
+
+
+## Total number of prescriptions for subsets of BNF codes used to calculate measures
+```{r fig.height=1.5, fig.width=3}
+# plot total UK prescriptions by year
+categories_prac %>%
+  filter(date > time_start) %>%
+  mutate(low_dose_ics_products = ics_not_laba - high_dose_ics_products,
+         dpi = mdi_dpi - mdi) %>%
+  rename(ics_low_dose = low_dose_ics_products,
+         ics_high_dose = high_dose_ics_products,
+         saba = saba_inhaler_products,
+         laba = laba_products) %>%
+  pivot_longer(cols = c(
+    all_saba_ics_products,
+    mdi,
+    dpi,
+    
+    ics_low_dose,
+    ics_high_dose,
+    saba,
+    laba,
+    )) %>%
+    # # all_saba_ics_products,
+    # # all_ics_products,
+    # low_dose_ics_products,
+    # high_dose_ics_products,
+    # # ics_not_laba,
+    # saba_inhaler_products, 
+    # laba_products,
+    # mdi,
+    # dpi
+    # )) %>%
+  group_by(date, name) %>%
+  summarise(value = sum(value)) %>%
+  ungroup() %>%
+  mutate(chart = if_else(name %in% c('all_saba_ics_products', 'mdi', 'dpi'), 'Totals', 'Subsets'),
+         chart_label = TRUE,
+         name = ifelse(name == 'all_saba_ics_products', 'all_saba_ics', name)) %>%
+  collect() -> for_lines_subsets
+
+final_date <- tibble(date = c("2022-01-01", "2022-01-01"),
+                     name = c('',''),
+                     value = c(0,0),
+                     chart = c('Totals', 'Subsets'),
+                     chart_label = c(TRUE, TRUE))
+
+# add extra room on x axis for labels
+for_lines_subsets <- rbind(for_lines_subsets, 
+                           final_date)
+
+
+
+plt <- ggplot(for_lines_subsets, aes(x= date,
+                      y=value,
+                      # ,
+                      group=name
+                      ))
+
+lines_national <- plt +  
+  geom_line() +
+  facet_wrap(~chart, scales = 'free_y', ncol = 2) +
+  # geom_point() +
+  labs(x = "Date", 
+       y = "Prescriptions written",
+       color = "Subset"
+       # title = "ICS prescriptions in England by subset"
+       ) +
+  theme_minimal() +
+  labs(title = "B", hjust = 'left') +
+  theme(plot.title = element_text(size=25)) +
+  scale_y_continuous(labels=scales::unit_format(suffix="m", 
+                                                scale=0.000001, sep="", big.mark   = ",")) +
+  geom_vline(xintercept = as.POSIXct("2020-03-16"), linetype=4) +
+  geom_vline(xintercept = as.POSIXct("2020-11-05"), linetype=4) +
+  theme(legend.position = "none") +
+  geom_text(data = . %>% filter(chart_label, date == "2020-12-01"),
+            aes(x=as.POSIXct("2021-01-01"),
+                y = value,
+                label = paste0(name)),
+            size = 3,
+            hjust = 'left') #as.character(IMD_decile_rank), color_lab))) +
+
+  # theme(legend.key.size = unit(0.1, 'cm')) +
+  # theme(legend.position = c(.9, 1.4),
+  #       legend.justification=c('top')) +
+  # theme(legend.text = element_text(size = 7))
+
+
+plot(lines_national)
+ggsave(paste(output_dir_plots, "Subsets_by_Month.tiff", sep=""))
+
+
+```
+
+
+## Number of prescriptions for ICS in March by year
+```{r fig.height=3, fig.width=3}
+# percentage change in number of prescriptions march 19 - 20
+categories_prac %>% 
+  filter(setting == 4,
+         !year == '2015',
+         month == "03") %>%
+  # select(year, all_ics_products) %>% # SABA and LABA are not ICS drugs. Use this for ICS+LABA
+  # select(year, all_saba_ics_products) %>% # USE THIS FOR SABA, LABA, and ICS
+  # select(year, ics_not_laba) %>% # USE THIS for just ICS
+  select(year, ics_not_laba, laba_products, saba_inhaler_products) %>% # choose this to display each category
+  pivot_longer(c(ics_not_laba, laba_products, saba_inhaler_products)) %>%
+  # group_by(year) %>%
+  group_by(year, name) %>%
+  # summarise(Number_of_prescriptions = sum(all_ics_products)) %>%
+  # summarise(Number_of_prescriptions = sum(all_saba_ics_products)) %>%
+  # summarise(Number_of_prescriptions = sum(ics_not_laba)) %>%
+  summarise(Number_of_prescriptions = sum(value)) %>%
+  collect() -> for_bars_march
+
+plt <- ggplot(data = for_bars_march,
+              mapping = aes(
+                x=year,
+                y = Number_of_prescriptions,
+                # colour = name,
+                fill = name,
+                # group = year
+                ))
+
+bars_march_national <- plt  + geom_bar(
+  stat="identity",
+  # position = 'dodge',
+  # fill="steelblue",
+  width=0.5) +
+  theme_minimal() +
+  labs(title = "A", hjust = 'left') +
+  theme(plot.title = element_text(size=25)) +
+  labs(x = "Year", y = "Number of Items") +
+       # title = "Total inhaled corticosteroid prescriptions in England for month of March, by year") +
+       # title = "Total ICS, SABA, and LABA in England in March") +
+       # title = "Total ICS in England in March") +
+  scale_y_continuous(labels=scales::unit_format(suffix="m", 
+                                                scale=0.000001, sep="", big.mark   = ","))+
+  theme(axis.text = element_text(size=12),
+        title = element_text(size=12)) +
+  guides(fill=guide_legend(title="Inhaler subset")) +
+  scale_fill_grey()
+
+plot(bars_march_national)
+ggsave(paste(output_dir_plots, "Inhaler prescriptions by year.tiff", sep=""),
+       plot=bars_march_national, dpi = 150)
+
+```
+
+# Overall change by category
+#```{r fig.height=3, fig.width=1.5}
+```{r }
+# plot % increase feb-march by subset
+for_lines_subsets %>%
+  rename(Measure = name) %>%
+  group_by(Measure) %>%
+  summarise(percent_change = ((value[date == "2020-03-01"] - value[date == "2020-02-01"])/
+                                (value[date == "2020-02-01"])*100),
+            ) %>%
+  mutate(name = ifelse(Measure == 'all_saba_ics_products', 'all_saba_ics', Measure),
+         chart = if_else(Measure %in% c('all_saba_ics', 'mdi', 'dpi'), 'Totals', 'Subsets')) %>%
+  arrange(chart) %>% 
+  collect() -> for_bars_perc
+
+
+plt <- ggplot(data = for_bars_perc,
+              mapping = aes(x=Measure,
+                            y=percent_change))
+
+bars_perc_national <- plt + geom_bar(stat="identity", width=0.5) +
+  facet_wrap(~chart, 
+             scales = 'free', 
+             ncol = 2) +
+  theme_minimal() +
+  labs(x = "Subset", y = "% change Feb to March 2020") +
+  labs(title = "C", hjust = 'left') +
+  theme(plot.title = element_text(size=25)) +
+  scale_y_continuous(labels=scales::unit_format(suffix="%")) +
+  # scale=0.000001, sep="", big.mark   = ","))+
+  theme(axis.text = element_text(size=10)) +
+  theme(axis.text.x=element_text(angle=45,hjust=0.95,vjust=0.2)) + 
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(vjust=1))
+
+plot(bars_perc_national)
+ggsave(paste(output_dir_plots, "percent_increase_by_measure.tiff", sep=""), 
+       plot=bars_perc_national, dpi = 150)
+
+```
+
+
+# FIGURE 1
+```{r fig.height=6, fig.width=3}
+figure_1 <- grid.arrange(bars_march_national,
+                  lines_national,
+                  bars_perc_national)
+
+ggsave(paste(output_dir_plots, "figure_1.jpg", sep=""), 
+       plot=figure_1,
+       dpi = 150,
+       width = 8,
+       height = 10,
+       units = 'in')
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Calcualte % increase at LSOA level by decile rank
+```{r}
+# caclulate %change in ICS prescriptions per LSOA feb-mar 2019
+categories_lsoa %>%
+  filter(date == "2020-02-01"|
+           date == "2020-03-01") %>% 
+rename(ics_saba_laba =  all_saba_ics_products,
+       ics = ics_not_laba,
+       laba = laba_products,
+       saba = saba_inhaler_products) %>%
+  select(date, lsoa_id, ics_saba_laba, ics, laba, saba, patients_resp_lsoa) %>%
+  pivot_longer(cols = c(ics_saba_laba, ics, laba, saba)) %>%
+  mutate(value = value/patients_resp_lsoa) %>%
+  # pivot_wider(id_cols = c('date', 'lsoa_id', 'name'),
+  pivot_wider(id_cols = c('lsoa_id', 'name'),
+              names_from = c(date),
+              names_prefix = "items_",
+              values_from = value) %>%
+  rename(items_feb = "items_2020-02-01",
+         items_march = "items_2020-03-01") %>%
+  group_by(lsoa_id, name) %>%
+  summarise(
+    # items_feb = items_feb,
+    # items_march = items_march,
+    perc_dif = ((items_march-items_feb)/items_feb)*100) %>%
+  collect() -> perc_dif_lsoa_long
+
+perc_dif_lsoa_long %>%
+  pivot_wider(names_prefix = "perc_dif_",
+              values_from = 'perc_dif') %>%
+  collect() -> perc_dif_lsoa
+
+
+# 
+# 
+# hist(perc_dif_lsoa$perc_dif_ics_saba_laba)
+# print(dim(perc_dif_lsoa$perc_dif_ics_saba_laba))
+# min(perc_dif_lsoa$perc_dif_ics_saba_laba)
+# max(perc_dif_lsoa$perc_dif_ics_saba_laba)
+# 
+# hist(perc_dif_lsoa$perc_dif_ics)
+# print(dim(perc_dif_lsoa$perc_dif_ics))
+# min(perc_dif_lsoa$perc_dif_ics)
+# max(perc_dif_lsoa$perc_dif_ics)
+# 
+# hist(perc_dif_lsoa$perc_dif_saba)
+# print(dim(perc_dif_lsoa$perc_dif_saba))
+# min(perc_dif_lsoa$perc_dif_saba)
+# max(perc_dif_lsoa$perc_dif_saba)
+# 
+# hist(perc_dif_lsoa$perc_dif_laba)
+# print(dim(perc_dif_lsoa$perc_dif_laba))
+# min(perc_dif_lsoa$perc_dif_laba)
+# max(perc_dif_lsoa$perc_dif_laba)
+
+```
+
+# CHECK CORRELATIONS OF % INCREASE WITH IMD
+NOTE: HIGHER IMD_P_rank = HIGHER LEVELS OF DEPRIVATION
+      HIGHER IMD_decile_rank = LOWER LEVELS OF DEPRIVATION
+```{r}
+perc_dif_lsoa_long %>%
+  right_join(IMD_all,
+            by = "lsoa_id") %>%
+  drop_na() %>%
+  collect() -> perc_dif_lsoa_IMD_long
+
+perc_dif_lsoa_IMD_long %>%
+  filter(name == 'ics_saba_laba') %>%
+  collect() -> perc_samp
+
+plot(perc_samp$IMD_P_rank, perc_samp$perc_dif)
+
+perc_dif_lsoa_IMD_long %>%
+  group_by(name) %>%
+  summarise(r_value_IMD_score = cor(IMD_score, perc_dif,
+                                    method = "pearson", use = "complete.obs"),
+            r_value_IMD_rank = cor(IMD_rank, perc_dif,
+                                    method = "pearson", use = "complete.obs"),
+            r_value_IMD_P_rank = cor(IMD_P_rank, perc_dif,
+                                    method = "pearson", use = "complete.obs"),
+            r_value_IMD_decile_rank =  cor(IMD_decile_rank, perc_dif,
+                                    method = "pearson", use = "complete.obs")) %>%
+  ungroup()
+
+```
+NOTE: HIGHER IMD_P_rank = HIGHER LEVELS OF DEPRIVATION
+      HIGHER IMD_decile_rank = LOWER LEVELS OF DEPRIVATION
+#perc dif LSOA decile lines
+NOTE: HIGHER IMD_P_rank = HIGHER LEVELS OF DEPRIVATION       HIGHER IMD_decile_rank = LOWER LEVELS OF DEPRIVATION
+```{r fig.height=6, fig.width=1.5}
+perc_dif_lsoa_IMD_long %>%
+  group_by(name, IMD_decile_rank) %>%
+  summarise(perc_dif_mean = mean(perc_dif),
+            perc_dif_median = median(perc_dif),
+            perc_dif_sd = sd(perc_dif)) %>%
+  ungroup() %>%
+  rbind(perc_dif_lsoa_IMD_long %>%
+          group_by(name) %>%
+          summarise(perc_dif_mean = mean(perc_dif),
+                    perc_dif_median = median(perc_dif),
+                    perc_dif_sd = sd(perc_dif)) %>%
+          ungroup() %>%
+          mutate(IMD_decile_rank = 'All')) %>%
+  mutate(IMD_decile_rank = factor(IMD_decile_rank,
+                                    levels = c(as.character(1:10), 'All'))) %>%
+  collect() -> perc_dif_decile
+
+perc_dif_decile[order(perc_dif_decile$IMD_decile_rank),]
+
+
+perc_dif_decile %>%
+  filter(IMD_decile_rank %in% c('1','10','All')) %>%
+  mutate(IMD_decile_rank = ifelse(IMD_decile_rank == '1', 
+                                  'Highest dep.', IMD_decile_rank),
+         IMD_decile_rank = ifelse(IMD_decile_rank == '10', 
+                                  'Lowest dep.', IMD_decile_rank),
+         IMD_decile_rank = ifelse(IMD_decile_rank == '11', 
+                                  'National', IMD_decile_rank)) %>%
+  mutate(IMD_decile_rank =
+           factor(IMD_decile_rank, levels = c('Lowest dep.',
+                                              'National',
+                                              'Highest dep.'))) %>%
+  collect() -> perc_dif_decile_bars
+
+bars_IMD_med <- ggplot(perc_dif_decile_bars,
+                       aes(x= IMD_decile_rank,
+                           y=perc_dif_median)) +
+  geom_bar(stat="identity",
+           position = 'dodge',
+           width=0.5) +
+  facet_wrap(~name,
+             # rows = vars(measure),
+             scales="free_y",
+             ncol = 1) +
+  theme_minimal() +
+  labs(x = "IMD decile rank", 
+       y = "Median % increase in March 2020 PP") +
+  labs(title = "B", hjust = 'left') +
+  theme(plot.title = element_text(size=25)) +
+  theme(axis.text = element_text(size=10),
+        title = element_text(size=10)) +
+  theme(axis.text.x = element_text(angle = 35))
+
+
+plot(bars_IMD_med)
+ggsave(paste(output_dir_plots, "figure_2B.jpg", sep=""))
+
+```
+
+
+# Make categories_lsoa_long
+```{r}
+categories_lsoa %>%
+  rename(
+    ics_laba_not_saba = all_ics_products,
+    ics_saba_laba =  all_saba_ics_products,
+    ics = ics_not_laba,
+    laba = laba_products,
+    saba = saba_inhaler_products) %>%
+  select(date, lsoa_id, ics_saba_laba, ics, laba, saba, 
+         # ics_laba_not_saba, 
+         patients_resp_lsoa) %>%
+  pivot_longer(cols = c(ics_saba_laba, ics, laba, 
+                        # ics_laba_not_saba, 
+                        saba)) %>%
+  # mutate(value = value/patients_resp_lsoa) %>%
+  collect() -> categories_lsoa_long
+
+```
+
+
+
+# Categories ribbons IMD raw
+```{r fig.height=3, fig.width=1.5}
+date_stretch = as.POSIXct("2021-05-15", format="%Y-%m-%d")
+
+# plot total UK prescriptions by year
+categories_lsoa_long %>%
+  filter(date > '2018-12-01')%>%
+  left_join(IMD_all %>% select(lsoa_id, IMD_decile_rank), by = 'lsoa_id') %>%
+  drop_na() %>%
+  rbind(tibble(date = rep(date_stretch, 12),
+               lsoa_id = rep('', 12),
+               patients_resp_lsoa = rep(0, 12),
+               name = rep(unique(categories_lsoa_long$name), 3),
+               value = rep(NA, 12),
+               IMD_decile_rank = c(rep(1, 4), rep(10, 4), rep('All', 4)))) %>%
+  collect() -> categories_rib_plot
+
+categories_rib_plot %>%
+  group_by(date, name, IMD_decile_rank) %>%
+  summarise(decile_median = median(value)) %>%
+  rbind(tibble(date = rep(date_stretch, 12),
+                     name = rep(unique(categories_rib_plot$name), 3),
+                     decile_median = rep(0, 12),
+                     decile_rank = rep(0, 12))) %>%
+  mutate(lab_var = ifelse(IMD_decile_rank %in% c(1, 10), TRUE, FALSE),
+         lab_text = ifelse(IMD_decile_rank == 11, TRUE, lab_var),
+         lab_text = ifelse(IMD_decile_rank == 1, " Most deprived", ""),
+         lab_text = ifelse(IMD_decile_rank == 10, " Least deprived", lab_text),
+         lab_text = ifelse(IMD_decile_rank == 11, " National Median", lab_text)) %>% 
+collect() -> categories_rib_plot_IMD_med
+
+# Draw ribbon plot
+ribplot <- ggplot() +
+  geom_lineribbon(data = categories_rib_plot %>% 
+           # filter(measure == 'environmental_inhalers') %>%
+           group_by(date, name) %>%
+           median_qi(value, .width = c(.5, .8, .95)),
+         aes(x = date, y = value, ymin = .lower, ymax = .upper),
+         linetype = "dashed",
+         color="white",
+         size = .8) +
+  # scale_fill_brewer() +
+  theme_minimal() +
+  geom_line(data = categories_rib_plot_IMD_med %>% 
+              filter(IMD_decile_rank %in% c(1,10)),
+                     # measure == 'environmental_inhalers'),
+            aes(x = date,
+                y = decile_median,
+                color = as.factor(IMD_decile_rank),
+                group = IMD_decile_rank),
+                # linetype = "longdash",
+                size = .8) +
+  facet_wrap(~name,
+             # rows = vars(measure),
+             scales="free_y",
+             ncol = 1) +
+  geom_vline(xintercept = as.POSIXct("2020-03-16"), linetype=4) +
+  geom_vline(xintercept = as.POSIXct("2020-11-05"), linetype=4) +
+  theme(legend.position = "none") +
+  scale_fill_grey(start=.8, end=0.2) +
+  # geom_text_repel(data = categories_rib_plot_IMD_med %>%
+  geom_text(data = categories_rib_plot_IMD_med %>% 
+              filter(lab_var, date == "2020-12-01"),
+            aes(x=as.POSIXct("2020-12-01"),
+                y = decile_median,
+                label = paste0(lab_text)),
+            size = 3,
+            hjust = 'left') +
+  labs(x = "Date",
+       y = "Number of prescriptions (Median)") +
+  labs(title = "A", hjust = 'left') +
+  theme(plot.title = element_text(size=25))
+
+
+
+
+plot(ribplot)
+ggsave(paste(output_dir_plots, "Figure_2A.jpg", sep=""), ribplot)
+
+```
+
+
+# FIGURE 2
+```{r fig.height=6, fig.width=3}
+figure_2 <- grid.arrange(ribplot, bars_IMD_med,
+                         layout_matrix = rbind(c(1,1,1,2,2),
+                                               c(1,1,1,2,2),
+                                               c(1,1,1,2,2)))
+
+ggsave(paste(output_dir_plots, "figure_2.jpg", sep=""), 
+       plot=figure_2,
+       dpi = 150,
+       width = 10,
+       height = 8,
+       units = 'in')
+
+```
+
+
+
+
+
+
+
+
+
+
+# Measures ribbons IMD
+```{r fig.height=3, fig.width=1.5}
+date_stretch = as.POSIXct("2021-05-15", format="%Y-%m-%d")
+n_measure <- 5
+
+OP_measures_lsoa %>%
+  # filter(!measure == 'environmental_inhalers') %>%
+  filter(date > "2018-12-01") %>%
+  select(date, measure, org_id, calc_value) %>%
+  rename(lsoa_id = org_id,
+         value = calc_value) %>%
+  right_join(IMD_all %>% select(lsoa_id, IMD_decile_rank),
+             by = "lsoa_id") %>%
+  drop_na() %>%
+  rbind(tibble(date = rep(date_stretch, n_measure*3),
+               lsoa_id = rep('', n_measure*3),
+               value = rep(NA, n_measure*3),
+               measure = c(rep(unique(OP_measures_lsoa$measure), 3)),
+               IMD_decile_rank = c(rep(1, n_measure), rep(10, n_measure), rep('All', n_measure)))) %>%
+  collect() -> measures_rib_plot  
+
+
+measures_rib_plot %>%
+  group_by(date, measure, IMD_decile_rank) %>%
+  summarise(decile_median = median(value)) %>%
+  rbind(tibble(date = rep(date_stretch, n_measure*3),
+                     measure = rep(unique(measures_rib_plot$measure), 3),
+                     decile_median = rep(0, n_measure*3),
+                     decile_rank = rep(0, n_measure*3))) %>%
+  mutate(lab_var = ifelse(IMD_decile_rank %in% c(1, 10), TRUE, FALSE),
+         lab_text = ifelse(IMD_decile_rank == 11, TRUE, lab_var),
+         lab_text = ifelse(IMD_decile_rank == 1, " Most deprived", ""),
+         lab_text = ifelse(IMD_decile_rank == 10, " Least deprived", lab_text),
+         lab_text = ifelse(IMD_decile_rank == 11, " National Median", lab_text)) %>% 
+collect() -> measures_rib_plot_IMD_med
+
+
+
+# Draw ribbon plot
+ribplot_meas <- ggplot() +
+  geom_lineribbon(data = measures_rib_plot %>% 
+           # filter(measure == 'environmental_inhalers') %>%
+           group_by(date, measure) %>%
+           median_qi(value, .width = c(.5, .8, .95)),
+         aes(x = date, y = value, ymin = .lower, ymax = .upper),
+         linetype = "dashed",
+         color="white",
+         size = .8) +
+  # scale_fill_brewer() +
+  theme_minimal() +
+  geom_line(data = measures_rib_plot_IMD_med %>% 
+              filter(IMD_decile_rank %in% c(1,10)),
+                     # measure == 'environmental_inhalers'),
+            aes(x = date,
+                y = decile_median,
+                color = as.factor(IMD_decile_rank),
+                group = IMD_decile_rank),
+                # linetype = "longdash",
+                size = .8) +
+  facet_wrap(~measure,
+             # rows = vars(measure),
+             scales="free_y",
+             ncol = 1) +
+  geom_hline(data = measures_rib_plot %>%
+               filter(measure == 'ics_pppm'),
+             aes(yintercept = 0.417), 
+             linetype=1,
+             color = 'grey') +
+  geom_vline(xintercept = as.POSIXct("2020-03-16"), linetype=4) +
+  geom_vline(xintercept = as.POSIXct("2020-11-05"), linetype=4) +
+  theme(legend.position = "none") +
+  scale_fill_grey(start=.8, end=0.2) +
+  # geom_text_repel(data = categories_rib_plot_IMD_med %>%
+  geom_text(data = measures_rib_plot_IMD_med %>% 
+              filter(lab_var, date == "2020-12-01"),
+            aes(x=as.POSIXct("2020-12-01"),
+                y = decile_median,
+                label = paste0(lab_text)),
+            size = 3,
+            hjust = 'left') +
+  labs(x = "Date",
+       y = "Prescribing measure index (Median)") +
+  labs(title = "A", hjust = 'left') +
+  theme(plot.title = element_text(size=25))
+
+
+
+
+plot(ribplot_meas)
+ggsave(paste(output_dir_plots, "Figure_3A.jpg", sep=""), ribplot_meas)
+
+```
+
+# Calculate pre/lockdown/post and median
+```{r}
+pre_dates <- seq(as.POSIXct("2019-04-01"), by = "month", length.out = 11)
+post_dates <- seq(as.POSIXct("2020-04-01"), by = "month", length.out = 11)
+
+measures_rib_plot %>%
+  filter(date > "2019-03-01",
+         date < "2021-01-01") %>%
+  mutate(date_period = ifelse(date %in% pre_dates, "pre", ""),
+         date_period = ifelse(date == as.Date("2020-03-01"), "lockdown", date_period),
+         date_period = ifelse(date %in% post_dates, "post", date_period)) %>%
+  collect() -> measures_pre_post_lsoa
+
+measures_pre_post_lsoa %>%
+  rbind(measures_pre_post_lsoa %>%
+          mutate(IMD_decile_rank = 'All')) %>%
+  group_by(date_period, lsoa_id, measure, IMD_decile_rank) %>%
+  summarise(period_avg = median(value)) %>%
+  ungroup() %>%
+  collect() -> measures_pre_post_lsoa_median
+
+measures_pre_post_lsoa_median %>%
+  group_by(date_period, measure, IMD_decile_rank) %>%
+  summarise(period_avg = median(period_avg)) %>%
+  ungroup() %>%
+  collect() -> measures_pre_post_median
+
+measures_pre_post_median %>%
+  mutate(IMD_decile_rank = factor(IMD_decile_rank,
+                                    levels = c(as.character(1:10), 'All'))) %>%
+  filter(IMD_decile_rank %in% c('1','10','All')) %>%
+  mutate(IMD_decile_rank = ifelse(IMD_decile_rank == '1', "  Most deprived", IMD_decile_rank),
+         IMD_decile_rank = ifelse(IMD_decile_rank == '10', "  Least deprived", IMD_decile_rank),
+         IMD_decile_rank = ifelse(IMD_decile_rank == '11', "  National Median", IMD_decile_rank)) %>%
+  # mutate(IMD_decile_rank = factor(IMD_decile_rank, levels = c(' Most deprived','All','10'))) %>%
+  collect() -> for_line_IMD_orig
+
+```
+
+# Line plot for pre/lockdown/post for IMD 1, 10, and overall
+```{r}
+for_line_IMD_orig %>%
+  # rbind(tibble(date_period = rep(' ', 12),
+  #              measure = rep(unique(for_line_IMD_orig$measure), 3),
+  #              IMD_decile_rank =
+  #                rep(c("Most deprived          ",
+  #                      "Least deprived          ",
+  #                      "National Median          "), 4),
+  #              period_avg = NA)) %>%
+  # rbind(tibble(date_period = rep('post', 12),
+  #              measure = rep(unique(for_line_IMD_orig$measure), 3),
+  #              IMD_decile_rank =
+  #                rep(c("Most deprived          ",
+  #                      "Least deprived          ",
+  #                      "National Median          "), 4),
+  #              period_avg = NA)) %>%
+  rbind(tibble(date_period = ' ',
+               measure = 'ics_pppm',
+               IMD_decile_rank = ' ',
+               period_avg = NA)) %>%
+  mutate(lab_var = ifelse(date_period == 'post', TRUE, '')) %>%
+  mutate(date_period = factor(date_period, levels = c('pre','lockdown','post', ' '))) %>%
+  collect()-> for_line_IMD
+
+# draw line plots
+measlines_prepost <- ggplot(data = for_line_IMD,
+                   aes(x=date_period, 
+                       y=period_avg,
+                       # group = as.factor(IMD_decile_rank),
+                       # fill = as.factor(IMD_decile_rank))) +
+                       group = IMD_decile_rank,
+                       # color = IMD_decile_rank,
+                       linetype = IMD_decile_rank)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  facet_wrap(~measure, 
+             scales="free_y",
+             ncol = 1) +
+  geom_hline(data = for_line_IMD %>% 
+               filter(measure == 'ics_pppm'),
+             aes(yintercept = 0.417), linetype=1) +
+  theme(legend.position = "none") +
+  geom_text(data = for_line_IMD %>%
+              filter(lab_var == TRUE),
+            aes(x= "post",
+                y = period_avg,
+                label = paste0(IMD_decile_rank)),
+            size = 3,
+            hjust = 'left') +
+  labs(x = "Date",
+       y = "Prescribing index aggregated by time period") +
+  labs(title = "B", hjust = 'left') +
+  theme(plot.title = element_text(size=25))
+
+
+      
+plot(measlines_prepost)
+ggsave(paste(output_dir_plots, "figure_3B.jpg", sep=""),
+       measlines_prepost)
+```
+
+# FIGURE 3
+```{r fig.height=6, fig.width=3}
+figure_3 <- grid.arrange(ribplot_meas, measlines_prepost,
+                         layout_matrix = rbind(c(1,1,1,2,2),
+                                               c(1,1,1,2,2),
+                                               c(1,1,1,2,2),
+                                               c(1,1,1,2,2)))
+
+ggsave(paste(output_dir_plots, "figure_3.jpg", sep=""), 
+       plot=figure_3,
+       dpi = 150,
+       width = 10,
+       height = 10,
+       units = 'in')
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+# Add new subset for LABA/ICS ratio measure (new)
+```{r}
+BNF_codes_measures %>%
+  filter(laba_products == TRUE) %>%
+  pull(bnf_code) -> laba_codes
+
+BNF_codes_measures %>%
+  filter(high_dose_ics_products == TRUE) %>%
+  pull(bnf_code) -> high_dose_codes
+
+BNF_codes_measures %>%
+  filter(all_ics_products == TRUE) %>%
+  pull(bnf_code) -> all_ics_codes
+
+ics_not_laba_codes <- all_ics_codes[!all_ics_codes %in% laba_codes]
+low_dose_ics_codes <- ics_not_laba_codes[!ics_not_laba_codes %in% high_dose_codes]
+
+BNF_codes_measures %>%
+  mutate(ics_not_laba = ifelse(bnf_code %in% ics_not_laba_codes, 'TRUE', 'FALSE'),
+         low_dose_ics = ifelse(bnf_code %in% low_dose_ics_codes, 'TRUE', 'FALSE')) %>%
+  collect() -> BNF_codes_measures
+
+```
+
+# cut down inhaler subcategories to only those that are used in measures
+```{r}
+BNF_codes_measures_used_only <-
+  BNF_codes_measures %>%
+  select(bnf_code, bnf_name, type, is_generic,
+    
+    high_dose_ics_products,  # icsdose
+    all_ics_products,        # icsdose
+    
+    # all_ics_products, # ics_pppm
+    # patients_resp, # ics_pppm
+    
+    laba_products, # laba_ics
+    ics_not_laba, # laba_ics
+    
+    saba_inhaler_products,  # saba
+    all_saba_ics_products, # saba
+    
+    mdi, # environmental_inhalers
+    mdi_dpi # environmental_inhalers
+)
+
+```
+
+
+
+# FIGURE 4
+# Environmental inhalers by generic/non-generic
+```{r}
+BNF_codes_measures_used_only %>%
+  filter(mdi_dpi == TRUE) %>%
+  collect() -> env_inhalers
+
+OP_prescriptions %>%
+  # filter(date > "2018-12-01" &
+  #          date < "2021-01-01",
+  filter(bnf_code %in% env_inhalers$bnf_code) %>%
+  left_join(env_inhalers %>%
+              select(bnf_code, bnf_name, is_generic, mdi, mdi_dpi),
+            by = c('bnf_code', 'bnf_name')) %>%
+  drop_na() %>%
+  group_by(date, is_generic) %>%
+  summarise(mdi = sum(items[mdi == "TRUE"]),
+            mdi_dpi = sum(items[mdi_dpi == "TRUE"]),
+            dpi = mdi_dpi - mdi) %>%
+  ungroup() %>% 
+  select(-mdi_dpi) %>%
+  pivot_longer(cols = c(mdi, dpi),
+               names_to = 'subset',
+               values_to = 'n_items') %>%
+  collect() -> for_env_plot
+
+
+for_env_plot %>%
+  group_by(date, subset) %>%
+  summarise(n_items = sum(n_items)) %>%
+  ungroup() %>%
+  collect() -> for_env_plot1
+
+env_plot1 <- ggplot(data = for_env_plot1,
+                    aes(x = date,
+                        y = n_items,
+                        group = subset,
+                        color = subset,
+                        fill = subset
+                        )) +
+  geom_line() +
+  theme_minimal()
+
+env_plot1
+
+
+env_plot2 <- ggplot(data = for_env_plot,
+                    aes(x = date,
+                        y = n_items,
+                        group = is_generic,
+                        color = is_generic,
+                        fill = is_generic
+                        )) +
+  facet_grid(~subset) +
+  geom_line() +
+  theme_minimal()
+
+env_plot2
+
+figure_env <- grid.arrange(env_plot1, env_plot2)
+                           # layout_matrix = rbind(c(1,2,2)))
+
+ggsave(paste(output_dir_plots, "figure_env.jpg", sep=""), 
+       plot=figure_env,
+       dpi = 150,
+       width = 6,
+       height = 6,
+       units = 'in')
+
+
+```

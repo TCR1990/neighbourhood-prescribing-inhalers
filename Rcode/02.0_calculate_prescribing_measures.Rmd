@@ -1,40 +1,92 @@
 ---
-title: "# Identifying unsafe patterns of asthma inhaler prescriptions in the UK"
+title: "02.0_calculate_prescribing_measures.Rmd"
 author: "Thomas Richards"
-date: "10/06/2020"
-output:
-  pdf_document: default
-  html_document: default
+date: "26/08/2024"
+output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
 knitr::opts_chunk$set(dev = 'png')
 knitr::opts_chunk$set(dpi=500)
-# knitr::opts_chunk$set(dpi=300,fig.width=7)
 ```
 
+# Calculate prescribing measures
+
+This workbook uses merges the prescribing data, and sociodemographic data, and GP practice data 
+to calculate 5 prescribing measures and the CCG, individual practice, and LSOA level.
+
+
+## Code required:
+
+## Libraries required:
+sf
+tidyverse 
+
+## Data files required:
+
+BNF_codes_measures.csv
+OP_prescriptions.csv
+QOF_all.csv
+OP_ccg_all_years.RData
+OP_patients_all_years.csv
+
+## Output files:
+
+practices_dates.csv
+lsoa_dates.csv
+practices_ccgs_dates.csv
+
+categories_prac.csv
+categories_lsoa.csv
+categories_ccg.csv
+
+OP_measures_prac.csv
+OP_measures_ccg.csv
+OP_measures_lsoa.csv
+
+OP_deciles.csv
+OP_deciles_lsoa.csv
+
+
+## 1. Load libraries and import data
+
+Load libraries, import required data files, and set the working directory to the folder containing the workbook:
 
 ```{r}
-library(stringr)
-library(tidyverse) 
-library(DBI) 
-library(tmap)
-library(RCurl)
+# library(stringr)
+library(tidyverse)
+# library(tmap)
+# library(RCurl)
 library(sf)
-library(lubridate)
-library(readxl)
+# library(lubridate)
+# library(readxl)
 
 # # get directory of current script and set it as working directory
 # filedir <- dirname(rstudioapi::getSourceEditorContext()$path)
 # setwd(filedir)
 # getwd()
 
-# load the data
-load("./data/OP_prescriptions_all_measures.RData")
-load("./data/OP_ccg_all_years.RData")
+# load BNF code data
+BNF_codes_measures <- read.csv("./data/BNF_codes_measures.csv")
+
+# load the presciption data
+OP_prescriptions <- read.csv("./data/OP_prescriptions.csv") %>%
+  filter(setting == 4,
+         bnf_code %in% BNF_codes_measures$bnf_code) %>%
+  mutate(ccg = gsub('.0', 'E', ccg, fixed = TRUE),
+         ccg = ifelse(ccg == 112, '16C', ccg),
+         date = as.POSIXct(date, format="%Y-%m-%d"),
+         year=format(date, "%Y"),
+         month=format(date, "%m"),
+         year_month=format(date, "%Y-%m")) 
+
+# load the quality ou
 QOF_all <- read.csv("./data/QOF_all.csv") %>% ungroup() %>% mutate(year = as.character(year))
-OP_codes_all_measures <- read.csv("./data/OP_codes_all_measures.csv")
+
+
+load("./data/OP_ccg_all_years.RData")
+
 ccg_names <- OP_ccg_all_years
 st_geometry(ccg_names) <- NULL
 ccg_names <- ccg_names %>% select(ccg_id, ccg_name) %>% unique()
@@ -42,68 +94,66 @@ ccg_names <- na.omit(ccg_names)
 ccg_names <- ccg_names[!duplicated(ccg_names[1]),]
 
 # to see what the algorithm expects
-single_prac_example <- read.csv("../Pythoncode/data/get_percentiles_for/single_prac_example.csv")
-single_ccg_example <- read.csv("../Pythoncode/data/get_percentiles_for/single_ccg_example.csv")
+#single_prac_example <- read.csv("../Pythoncode/data/get_percentiles_for/single_prac_example.csv")
+#single_ccg_example <- read.csv("../Pythoncode/data/get_percentiles_for/single_ccg_example.csv")
 
 # connect to the database
-db <- DBI::dbConnect(RSQLite::SQLite(), dbname="./data/OP_prescriptions_all_measures.sqlite")
+#db <- DBI::dbConnect(RSQLite::SQLite(), dbname="./data/OP_prescriptions_all_measures.sqlite")
 
-# Make a new table which has useable date formats
-OP_prescriptions <- OP_prescriptions_all_measures %>%
-  filter(setting == 4) %>%
-  mutate(ccg = gsub('.0', 'E', ccg, fixed = TRUE),
-         ccg = ifelse(ccg == 112, '16C', ccg),
-         date = as.POSIXct(date, format="%Y-%m-%d"),
-         year=format(date, "%Y"),
-         month=format(date, "%m"),
-         year_month=format(date, "%Y-%m")) 
-# %>%
-#   mutate(product_id = substring(bnf_code, 0, 11)) %>%
-#   left_join(OP_codes_all_measures, copy = TRUE)
-
-dbDisconnect(db)
+# # Make a new table which has useable date formats
+# OP_prescriptions <- OP_prescriptions_all_measures %>%
+#   filter(setting == 4) %>%
+#   mutate(ccg = gsub('.0', 'E', ccg, fixed = TRUE),
+#          ccg = ifelse(ccg == 112, '16C', ccg),
+#          date = as.POSIXct(date, format="%Y-%m-%d"),
+#          year=format(date, "%Y"),
+#          month=format(date, "%m"),
+#          year_month=format(date, "%Y-%m")) 
+# # %>%
+# #   mutate(product_id = substring(bnf_code, 0, 11)) %>%
+# #   left_join(OP_codes_all_measures, copy = TRUE)
+# 
+# dbDisconnect(db)
 
 
 ####CHECK OUTPUT DIRS
-output_dir <- './Paper_1/data/'
+output_dir <- './data/'
 
-OP_patients_all <- read.csv("./Paper_1/data/OP_patients_all_years.csv") %>%
+OP_patients_all <- read.csv("./data/OP_patients_all_years.csv") %>%
   mutate(year = as.character(year))
 
 
 
 ```
 
-# Add new subset for LABA/ICS ratio measure (new)
+## 2. Add new drug subset for LABA/ICS ratio measure (novel measure)
 ```{r}
-OP_codes_all_measures %>%
+BNF_codes_measures %>%
   filter(laba_products == TRUE) %>%
   pull(bnf_code) -> laba_codes
 
-OP_codes_all_measures %>%
+BNF_codes_measures %>%
   filter(all_ics_products == TRUE) %>%
   pull(bnf_code) -> all_ics_codes
 
 ics_not_laba_codes <- all_ics_codes[!all_ics_codes %in% laba_codes]
 
-OP_codes_all_measures %>%
+BNF_codes_measures %>%
   mutate(ics_not_laba = ifelse(bnf_code %in% ics_not_laba_codes, 'TRUE', 'FALSE')) %>%
-  collect() -> OP_codes_all_measures
+  collect() -> BNF_codes_measures
 
 ```
 
 
-# cut down inhaler subcategories to only those that are used in measures
+## 3. Remove infoabout BNF code subsets that are not used in the analysis
+#TODO: remove this section?
 ```{r}
-OP_codes_all_measures_used_only <-
-  OP_codes_all_measures %>%
+BNF_codes_measures_used_only <-
+  BNF_codes_measures %>%
   select(bnf_code, bnf_name, type, is_generic,
     
     high_dose_ics_products,  # icsdose
     all_ics_products,        # icsdose
-    
-    # all_ics_products, # ics_pppm
-    # patients_resp, # ics_pppm
     
     laba_products, # laba_ics
     ics_not_laba, # laba_ics
@@ -113,12 +163,7 @@ OP_codes_all_measures_used_only <-
     
     mdi, # environmental_inhalers
     mdi_dpi # environmental_inhalers
-    
-    
-    ## THESE ARE USED IN TRIPLE THERAPY, BUT NO OTHER MEASURE SO NOT INCLUDED HERE - SEE NHSBSA RESPIRATORY DASHBOARD DOCUMENT
-    # lama_products,
-    # ics_products,
-    # asthma_copd_medications
+
 )
 
 ```
@@ -126,11 +171,12 @@ OP_codes_all_measures_used_only <-
 
 
 
-# Remove rows that are not used in any relevant measure
+## 4. Remove BNF codes not used in the analysis
+## TODO: merge this with chunk above?
 ```{r}
 
 
-OP_codes_all_measures_used_only_short <- OP_codes_all_measures_used_only %>%
+BNF_codes_measures_used_only_short <- BNF_codes_measures_used_only %>%
   filter(
     (high_dose_ics_products == TRUE |
        all_ics_products == TRUE |
@@ -143,16 +189,11 @@ OP_codes_all_measures_used_only_short <- OP_codes_all_measures_used_only %>%
        
        mdi == TRUE |
        mdi_dpi == TRUE))
-      
-    ## THESE ARE USED IN TRIPLE THERAPY, BUT NO OTHER MEASURE SO NOT INCLUDED HERE - SEE NHSBSA RESPIRATORY DASHBOARD DOCUMENT
-       # lama_products == TRUE |
-       # ics_products == TRUE |
-       # asthma_copd_medications == TRUE))
 
 ```
 
-# Make a dataframe of practice and CCG IDs and dates
-For some analyses, we need an empty dataframe of practice codes for each date. Practices are opened/closed throughout the year, and including all those in a single year will over/estimate weight when it comes to calculating at the LSOA level. Must there for have a list of which practices are open for each date. We get (an estimate of) this from OP_prescriptions, as this contains so many codes that only practices where no inhaler products are prescribed at all throughout the whole analysis period will be missed, which is relatively few.
+## Make a dataframe of practice and CCG IDs and dates
+For some analyses, we need an empty dataframe of practice codes for each date. Practices are opened/closed through the years, and including all those in a single year will over/estimate weight when it comes to calculating at the LSOA level. We must therefore have a list of which practices are open for each date. We get (an estimate of) this from OP_prescriptions, as this contains so many codes that only practices where no inhaler products are prescribed at all throughout the whole analysis period will be missed, which is relatively few.
 
 We create a row (date) for each practice in between the earliest and the latest time something was prescribed from a given practice. 
 
@@ -179,7 +220,7 @@ OP_prescriptions %>%
          ) %>%
   collect() -> practices_dates
 
-write_csv(practices_dates, path = paste(output_dir, 'practices_dates.csv', sep=''))
+write_csv(practices_dates, path = paste(output_dir, 'dates_practices.csv', sep=''))
 
 dates_years <- practices_dates %>% select(date, year) %>% distinct() %>% arrange(date)
 ```
@@ -195,7 +236,7 @@ OP_patients_all %>%
   arrange(date, lsoa_id) %>%
   collect() -> lsoa_dates
 
-write_csv(lsoa_dates, path = paste(output_dir, 'lsoa_dates.csv', sep=''))
+write_csv(lsoa_dates, path = paste(output_dir, 'dates_lsoa.csv', sep=''))
 
 ```
 
@@ -222,7 +263,7 @@ OP_prescriptions %>%
          ) %>%
   collect() -> practices_ccgs_dates
 
-write_csv(practices_ccgs_dates, path = paste(output_dir, 'practices_ccgs_dates.csv', sep=''))
+write_csv(practices_ccgs_dates, path = paste(output_dir, 'dates_practices_ccgs.csv', sep=''))
 
 ```
 
@@ -231,65 +272,65 @@ write_csv(practices_ccgs_dates, path = paste(output_dir, 'practices_ccgs_dates.c
 
 ```{r}
 # Import reviews and calculate at LSOA level
-reviews_ast <- read_excel('./data/QOF_reviews/qof_reviews_only.xlsx',
-                          sheet = 'AST')
-reviews_ast <- as_tibble(reviews_ast)# %>% drop_na()
-
-reviews_copd <- read_excel('./data/QOF_reviews/qof_reviews_only.xlsx',
-                           sheet = 'COPD')
-reviews_copd <- as_tibble(reviews_copd) #%>% drop_na()
-
-reviews_ast %>%
-  rename(intervention_pc_ast = intervention_pc,
-         list_size_ast = list_size,
-         register_ast = register) %>%
-  left_join(reviews_copd %>%
-              rename(intervention_pc_copd = intervention_pc,
-                     list_size_copd = list_size,
-                     register_copd = register),
-            by = c('practice_id', 'practice_name', 'year')) %>%
-  drop_na() %>% 
-  mutate(year = as.character(year),
-         register_ast = as.integer(register_ast),
-         register_copd = as.integer(register_copd),) %>%
-  collect() -> reviews
-
-# calculate total number of patients who have had review
-reviews %>%
-  mutate(n_patients = register_ast + register_copd,
-         n_patients_reviewed_ast = register_ast*(intervention_pc_ast/100),
-         n_patients_reviewed_copd = register_copd*(intervention_pc_copd/100),
-         total_n_reviewed = n_patients_reviewed_ast + n_patients_reviewed_copd,
-         intervention_pc_total = (total_n_reviewed/n_patients)*100) %>%
-  collect() -> reviews_tot
-
-
-reviews_tot %>%
-  left_join(OP_patients, by="practice_id") %>%
-  drop_na() %>%
-  rename(patients_registered = count) %>%
-  group_by(practice_id) %>%
-  mutate(patients_registered_tot = sum(patients_registered)) %>%
-  ungroup() %>%
-  mutate(weighting_factor = patients_registered/patients_registered_tot,
-         n_patients = n_patients*weighting_factor,
-         n_patients_reviewed_ast = n_patients_reviewed_ast*weighting_factor,
-         n_patients_reviewed_copd = n_patients_reviewed_copd*weighting_factor,
-         total_n_reviewed = total_n_reviewed*weighting_factor) %>%
-  group_by(lsoa_id) %>%
-  summarise(n_patients = sum(n_patients),
-            total_n_reviewed = sum(total_n_reviewed)) %>%
-  # intervention_pc_ast = sum(intervention_pc_ast),
-  # intervention_pc_copd = sum(intervention_pc_copd),
-  # patients_registered_lsoa = sum(patients_registered)) %>%
-  ungroup() %>%
-  mutate(intervention_pc_total = (total_n_reviewed/n_patients)*100) %>%
-  collect() -> reviews_lsoa
-
-write_csv(reviews_lsoa, path = paste(output_dir, 'reviews_lsoa.csv', sep=''))
-
-reviews_prac <- reviews_tot %>% select(gsub('lsoa_id', 'practice_id', colnames(reviews_lsoa)))
-write_csv(reviews_prac, path = paste(output_dir, 'reviews_prac.csv', sep=''))
+# reviews_ast <- read_excel('./data/QOF_reviews/qof_reviews_only.xlsx',
+#                           sheet = 'AST')
+# reviews_ast <- as_tibble(reviews_ast)# %>% drop_na()
+# 
+# reviews_copd <- read_excel('./data/QOF_reviews/qof_reviews_only.xlsx',
+#                            sheet = 'COPD')
+# reviews_copd <- as_tibble(reviews_copd) #%>% drop_na()
+# 
+# reviews_ast %>%
+#   rename(intervention_pc_ast = intervention_pc,
+#          list_size_ast = list_size,
+#          register_ast = register) %>%
+#   left_join(reviews_copd %>%
+#               rename(intervention_pc_copd = intervention_pc,
+#                      list_size_copd = list_size,
+#                      register_copd = register),
+#             by = c('practice_id', 'practice_name', 'year')) %>%
+#   drop_na() %>% 
+#   mutate(year = as.character(year),
+#          register_ast = as.integer(register_ast),
+#          register_copd = as.integer(register_copd),) %>%
+#   collect() -> reviews
+# 
+# # calculate total number of patients who have had review
+# reviews %>%
+#   mutate(n_patients = register_ast + register_copd,
+#          n_patients_reviewed_ast = register_ast*(intervention_pc_ast/100),
+#          n_patients_reviewed_copd = register_copd*(intervention_pc_copd/100),
+#          total_n_reviewed = n_patients_reviewed_ast + n_patients_reviewed_copd,
+#          intervention_pc_total = (total_n_reviewed/n_patients)*100) %>%
+#   collect() -> reviews_tot
+# 
+# 
+# reviews_tot %>%
+#   left_join(OP_patients, by="practice_id") %>%
+#   drop_na() %>%
+#   rename(patients_registered = count) %>%
+#   group_by(practice_id) %>%
+#   mutate(patients_registered_tot = sum(patients_registered)) %>%
+#   ungroup() %>%
+#   mutate(weighting_factor = patients_registered/patients_registered_tot,
+#          n_patients = n_patients*weighting_factor,
+#          n_patients_reviewed_ast = n_patients_reviewed_ast*weighting_factor,
+#          n_patients_reviewed_copd = n_patients_reviewed_copd*weighting_factor,
+#          total_n_reviewed = total_n_reviewed*weighting_factor) %>%
+#   group_by(lsoa_id) %>%
+#   summarise(n_patients = sum(n_patients),
+#             total_n_reviewed = sum(total_n_reviewed)) %>%
+#   # intervention_pc_ast = sum(intervention_pc_ast),
+#   # intervention_pc_copd = sum(intervention_pc_copd),
+#   # patients_registered_lsoa = sum(patients_registered)) %>%
+#   ungroup() %>%
+#   mutate(intervention_pc_total = (total_n_reviewed/n_patients)*100) %>%
+#   collect() -> reviews_lsoa
+# 
+# write_csv(reviews_lsoa, path = paste(output_dir, 'reviews_lsoa.csv', sep=''))
+# 
+# reviews_prac <- reviews_tot %>% select(gsub('lsoa_id', 'practice_id', colnames(reviews_lsoa)))
+# write_csv(reviews_prac, path = paste(output_dir, 'reviews_prac.csv', sep=''))
 
 ```
 
@@ -303,16 +344,16 @@ OP_prescriptions %>%
     year=format(date, "%Y"),
     date=as.character(date)
   ) %>%
-  left_join(OP_codes_all_measures %>% 
+  left_join(BNF_codes_measures %>% 
               select(bnf_code, 
                      all_ics_products,
                      high_dose_ics_products,
                      saba_inhaler_products,
                      all_saba_ics_products, 
                      laba_products,
-                     lama_products,
-                     ics_products, 
-                     asthma_copd_medications,
+                     # lama_products,
+                     # ics_products, 
+                     # asthma_copd_medications,
                      mdi,
                      mdi_dpi,
                      ics_not_laba
@@ -324,9 +365,9 @@ OP_prescriptions %>%
       saba_inhaler_products == "TRUE" |
       all_saba_ics_products == "TRUE" |
       laba_products == "TRUE" |
-      lama_products == "TRUE" |
-      ics_products == "TRUE" |
-      asthma_copd_medications == "TRUE" |
+      # lama_products == "TRUE" |
+      # ics_products == "TRUE" |
+      # asthma_copd_medications == "TRUE" |
       mdi == "TRUE" |
       mdi_dpi == "TRUE" |
       ics_not_laba == "TRUE",
@@ -340,9 +381,9 @@ OP_prescriptions %>%
     saba_inhaler_products = sum(items[saba_inhaler_products == "TRUE"]),
     all_saba_ics_products = sum(items[all_saba_ics_products == "TRUE"]),
     laba_products = sum(items[laba_products == "TRUE"]),
-    lama_products = sum(items[lama_products == "TRUE"]),
-    ics_products = sum(items[ics_products == "TRUE"]),
-    asthma_copd_medications = sum(items[asthma_copd_medications == "TRUE"]),
+    # lama_products = sum(items[lama_products == "TRUE"]),
+    # ics_products = sum(items[ics_products == "TRUE"]),
+    # asthma_copd_medications = sum(items[asthma_copd_medications == "TRUE"]),
     mdi = sum(items[mdi == "TRUE"]),
     mdi_dpi = sum(items[mdi_dpi == "TRUE"]),
     ics_not_laba = sum(items[ics_not_laba =="TRUE"])
@@ -407,9 +448,9 @@ for(current_year in year_list){
       saba_inhaler_products = saba_inhaler_products*weighting_factor,
       all_saba_ics_products = all_saba_ics_products*weighting_factor,
       laba_products = laba_products*weighting_factor,
-      lama_products = lama_products*weighting_factor,
-      ics_products = ics_products*weighting_factor,
-      asthma_copd_medications = asthma_copd_medications*weighting_factor,
+      # lama_products = lama_products*weighting_factor,
+      # ics_products = ics_products*weighting_factor,
+      # asthma_copd_medications = asthma_copd_medications*weighting_factor,
       mdi = mdi*weighting_factor,
       mdi_dpi = mdi_dpi*weighting_factor,
       ics_not_laba = ics_not_laba*weighting_factor,
@@ -424,9 +465,9 @@ for(current_year in year_list){
       saba_inhaler_products = sum(saba_inhaler_products), 
       all_saba_ics_products = sum(all_saba_ics_products), 
       laba_products = sum(laba_products), 
-      lama_products = sum(lama_products), 
-      ics_products = sum(ics_products), 
-      asthma_copd_medications = sum(asthma_copd_medications), 
+      # lama_products = sum(lama_products), 
+      # ics_products = sum(ics_products), 
+      # asthma_copd_medications = sum(asthma_copd_medications), 
       mdi = sum(mdi), 
       mdi_dpi = sum(mdi_dpi),
       ics_not_laba = sum(ics_not_laba),
@@ -444,7 +485,7 @@ for(current_year in year_list){
 
 categories_lsoa <- categories_lsoa %>% mutate(year=format(as.POSIXct(date), "%Y"))
 
-write_csv(categories_lsoa, path = paste(output_dir, 'categories_lsoa', sep=''))
+write_csv(categories_lsoa, path = paste(output_dir, 'categories_lsoa.csv', sep=''))
 
 ```
 
@@ -464,9 +505,40 @@ categories_prac %>%
   mutate(year=format(as.POSIXct(date), "%Y")) %>%
   collect() -> categories_ccg
 
-write_csv(categories_ccg, path = paste(output_dir, 'categories_ccg', sep=''))
+write_csv(categories_ccg, path = paste(output_dir, 'categories_ccg.csv', sep=''))
 
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1294,6 +1366,20 @@ write_csv(OP_deciles_lsoa, path = paste(output_dir, "OP_deciles_lsoa.csv", sep="
 ```
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ## Check practice deciles against cgg deciles
 ```{r}
 # prac
@@ -1345,7 +1431,7 @@ plt + geom_line() +
 # calculate High dose ICS items as a % of all ICS items	at practice level
 OP_prescriptions %>%
   left_join(
-    OP_codes_all_measures %>% select(bnf_code, high_dose_ics_products, all_ics_products),
+    BNF_codes_measures %>% select(bnf_code, high_dose_ics_products, all_ics_products),
     by = "bnf_code"
   ) %>%
   filter(high_dose_ics_products == "TRUE" |
@@ -1376,61 +1462,61 @@ hist(percentile_test$percent_rank)
 lines(percentile_test$percentile[percentile_test$org_id=="Y01962"])
 
 
-single_prac_example <- read.csv("../Pythoncode/data/get_percentiles_for/single_prac_example.csv")
-
-# check icsdose
-
-unique(single_prac_example$measure)
-OP_icsdose <- single_prac_example %>% 
-  filter(measure == "icsdose") %>% 
-  rename(OP_percentile = percentile) %>%
-  left_join(percentile_test %>% select(org_id, percentile_ntile, date) %>%
-              mutate(date=as.character(date)), by = c("org_id", "date"))
-
-
-for_plot <- OP_icsdose %>% select(date, percentile_ntile, OP_percentile) %>%
-  pivot_longer(cols= c(percentile_ntile, OP_percentile))
-
-for_plot <- na.omit(for_plot)
-
-plt <- ggplot(data = for_plot, 
-              aes(x = date, 
-                  y = value,
-                  group = name,
-                  color = name))
-plt + geom_line()
+# single_prac_example <- read.csv("../Pythoncode/data/get_percentiles_for/single_prac_example.csv")
+# 
+# # check icsdose
+# 
+# unique(single_prac_example$measure)
+# OP_icsdose <- single_prac_example %>% 
+#   filter(measure == "icsdose") %>% 
+#   rename(OP_percentile = percentile) %>%
+#   left_join(percentile_test %>% select(org_id, percentile_ntile, date) %>%
+#               mutate(date=as.character(date)), by = c("org_id", "date"))
+# 
+# 
+# for_plot <- OP_icsdose %>% select(date, percentile_ntile, OP_percentile) %>%
+#   pivot_longer(cols= c(percentile_ntile, OP_percentile))
+# 
+# for_plot <- na.omit(for_plot)
+# 
+# plt <- ggplot(data = for_plot, 
+#               aes(x = date, 
+#                   y = value,
+#                   group = name,
+#                   color = name))
+# plt + geom_line()
 
 ```
 
 ```{r}
 
-hist(environmental_inhalers_prac$denominator)
-lines(environmental_inhalers_prac$percentile[percentile_test$org_id=="Y01962"])
-
-
-single_prac_example <- read.csv("../Pythoncode/data/get_percentiles_for/single_prac_example.csv")
-
-# check icsdose
-
-unique(single_prac_example$measure)
-
-OP_environmental_inhalers <- single_prac_example %>% 
-  filter(measure == "environmental_inhalers") %>% 
-  rename(OP_percentile = percentile) %>%
-  left_join(environmental_inhalers_prac %>% select(org_id, percentile, date) %>% mutate(date=as.character(date)), by = c("org_id", "date"))
-
-
-for_plot <- OP_environmental_inhalers %>% select(date, percentile, OP_percentile) %>%
-  pivot_longer(cols= c(percentile, OP_percentile))
-
-for_plot <- na.omit(for_plot)
-
-plt <- ggplot(data = for_plot, 
-              aes(x = date, 
-                  y = value,
-                  group = name,
-                  color = name))
-plt + geom_line()
+# hist(environmental_inhalers_prac$denominator)
+# lines(environmental_inhalers_prac$percentile[percentile_test$org_id=="Y01962"])
+# 
+# 
+# single_prac_example <- read.csv("../Pythoncode/data/get_percentiles_for/single_prac_example.csv")
+# 
+# # check icsdose
+# 
+# unique(single_prac_example$measure)
+# 
+# OP_environmental_inhalers <- single_prac_example %>% 
+#   filter(measure == "environmental_inhalers") %>% 
+#   rename(OP_percentile = percentile) %>%
+#   left_join(environmental_inhalers_prac %>% select(org_id, percentile, date) %>% mutate(date=as.character(date)), by = c("org_id", "date"))
+# 
+# 
+# for_plot <- OP_environmental_inhalers %>% select(date, percentile, OP_percentile) %>%
+#   pivot_longer(cols= c(percentile, OP_percentile))
+# 
+# for_plot <- na.omit(for_plot)
+# 
+# plt <- ggplot(data = for_plot, 
+#               aes(x = date, 
+#                   y = value,
+#                   group = name,
+#                   color = name))
+# plt + geom_line()
 
 ```
 
@@ -1438,61 +1524,61 @@ plt + geom_line()
 
 ```{r}
 # Investigate number of ICS per person per practice which are velow threshold 
-ics_pppm_prac %>%
-  filter(!calc_value == Inf) %>% 
-  summarise(below_thresh = sum(calc_value < 0.417, na.rm = TRUE),
-            tot = n(),
-            prop = below_thresh/tot)
-hist(ics_pppm_prac$calc_value)
-hist(ics_pppm_prac$calc_value[ics_pppm_prac$calc_value <1])
+# ics_pppm_prac %>%
+#   filter(!calc_value == Inf) %>% 
+#   summarise(below_thresh = sum(calc_value < 0.417, na.rm = TRUE),
+#             tot = n(),
+#             prop = below_thresh/tot)
+# hist(ics_pppm_prac$calc_value)
+# hist(ics_pppm_prac$calc_value[ics_pppm_prac$calc_value <1])
 ```
 
 # test 'sum' function
 ```{r}
 
-df <- data.frame("somevariable" = c("a","a","b","b","c","c","d","d","e","e"), 
-                 "someothervariable" = c(rep("a",10)),
-                 "somevalue"=c(1:10))
-
-df %>%
-  summarise(sum_a = sum(somevalue[somevariable=="a"]),
-            sum_e = sum(somevalue[somevariable=="e"]))
-
-# numerator = sum(items[high_dose_ics_products == "TRUE"])
-
-# add all variable e
-df %>%
-  summarise(sum_a = sum(somevalue[somevariable=="a"]),
-            sum_e = sum(somevalue[somevariable=="e"]))
-
-# count the number below x
-df %>%
-  summarise(n_below_5 = sum(somevalue <= 6))
-
-# count the number below x based on y
-df %>%
-  summarise(n_below_5 = sum(somevalue <= 6),
-            total = n())
-
-
-df %>% filter(somevariable == "a") %>%
-  summarise(sum(somevalue))
-
-df %>%
-  summarise(sum(somevalue[somevariable == "a"]))
+# df <- data.frame("somevariable" = c("a","a","b","b","c","c","d","d","e","e"), 
+#                  "someothervariable" = c(rep("a",10)),
+#                  "somevalue"=c(1:10))
+# 
+# df %>%
+#   summarise(sum_a = sum(somevalue[somevariable=="a"]),
+#             sum_e = sum(somevalue[somevariable=="e"]))
+# 
+# # numerator = sum(items[high_dose_ics_products == "TRUE"])
+# 
+# # add all variable e
+# df %>%
+#   summarise(sum_a = sum(somevalue[somevariable=="a"]),
+#             sum_e = sum(somevalue[somevariable=="e"]))
+# 
+# # count the number below x
+# df %>%
+#   summarise(n_below_5 = sum(somevalue <= 6))
+# 
+# # count the number below x based on y
+# df %>%
+#   summarise(n_below_5 = sum(somevalue <= 6),
+#             total = n())
+# 
+# 
+# df %>% filter(somevariable == "a") %>%
+#   summarise(sum(somevalue))
+# 
+# df %>%
+#   summarise(sum(somevalue[somevariable == "a"]))
 
 
 ```
 
 
 ```{r}
-OP_deciles_original <- read_csv("../Pythoncode/data/allmeasuresdeciles_12_16.csv")
-
-ccg_names_new <- OP_ccg_all_years
-st_geometry(ccg_names_new) <- NULL
-ccg_names_new <- ccg_names_new %>% select(ccg_id, ccg_name) %>% unique()
-ccg_names_new <- na.omit(ccg_names_new)
-ccg_names_new <- ccg_names_new[!duplicated(ccg_names_new[1]),]
+# OP_deciles_original <- read_csv("../Pythoncode/data/allmeasuresdeciles_12_16.csv")
+# 
+# ccg_names_new <- OP_ccg_all_years
+# st_geometry(ccg_names_new) <- NULL
+# ccg_names_new <- ccg_names_new %>% select(ccg_id, ccg_name) %>% unique()
+# ccg_names_new <- na.omit(ccg_names_new)
+# ccg_names_new <- ccg_names_new[!duplicated(ccg_names_new[1]),]
 ```
 
 

@@ -1,3 +1,6 @@
+# Data files which are too large for repo
+Rcode/data-provided/OP_prescriptions.csv
+
 # History files
 .Rhistory
 .Rapp.history
@@ -47,3 +50,4 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+

@@ -70,7 +70,11 @@ start_time <- Sys.time()
 # TODO: Could combine these scripts into a single script??
 
 # 2.1 get codes for measures from OpenPrescribing.net
-source("./00.1_get_OP_codes.R", echo=FALSE) # Calls OpenPrescribing.net for BNF codes, leaves OP_codes variable in workspace
+# source("./00.1_get_OP_codes_from_scrape.R", echo=FALSE)
+source("./00.1_get_OP_codes_from_file.R", echo=FALSE) # Use this version with the 'data-provided' folder  due to website changes on OpenPrescribing.net
+# Calls OpenPrescribing.net for BNF codes, leaves OP_codes variable in workspace
+
+
 
 # 2.2 get codes for measures NHSBSA
 source("./00.2_get_NHSBSA_codes.R", echo=FALSE) # Calls NHSBSA for BNF codes, leaves NHSBSA_codes variable in workspace
@@ -107,6 +111,7 @@ rm(list=c("OP_codes", "NHSBSA_codes", "BNF_codes_combined_pre_checks"))
 # Depends on response from serve but can take 8-10 mins to run.
 source("./00.3_get_BNF_info_from_OP.R", echo=FALSE) # Calls OpenPrescribing.net for info from BNF codes, leaves BNF_codes_measures variable in workspace and saves in ./data folder.
 ```
+
 
 
 ## 3. Collect Prescribing data from Open Prescribing.net
