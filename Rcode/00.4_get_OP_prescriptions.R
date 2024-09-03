@@ -170,14 +170,29 @@ write.buffer.db.to.main <- function() {
   db <- DBI::dbConnect(RSQLite::SQLite(), dbname = "./data/OP_prescriptions.sqlite")
   db2 <- DBI::dbConnect(RSQLite::SQLite(), dbname = "./data/OP_prescriptions_BUFFER.sqlite")
   
-  db2_table <- tbl(db2, "OP_prescriptions") %>% collect()
+  # Buffer is empty, move on
+  if(length(dbListTables(db2))<1){
+    
+    print.and.append(
+      paste0("\n\nNothing to move."),
+      log_file_dir, 
+      TRUE)      
+    
+    }else{
+    
+    db2_table <- tbl(db2, "OP_prescriptions") %>% collect()
+    
+    dbWriteTable(conn = db, name = "OP_prescriptions", value = db2_table, row.names = FALSE, header = TRUE, append = TRUE)
   
-  dbWriteTable(conn = db, name = "OP_prescriptions", value = db2_table, row.names = FALSE, header = TRUE, append = TRUE)
+    rm('db2_table')
+    
+    }
   
+
   dbDisconnect(db)
   dbDisconnect(db2)
   
-  rm('db', 'db2', 'db2_table')            
+  rm('db', 'db2')            
   
   file.remove("./data/OP_prescriptions_BUFFER.sqlite")
 }
@@ -225,7 +240,8 @@ OP_prescriptions_dups <-
   collect()
 
 # finally remove duplicate rows and write
-OP_prescriptions <- unique(OP_prescriptions_dups)
+# OP_prescriptions <- unique(OP_prescriptions_dups)
+OP_prescriptions <- distinct(OP_prescriptions_dups)
 OP_prescriptions <- OP_prescriptions %>% mutate(date = as.character(date))
 
 dbWriteTable(conn = db, name = "OP_prescriptions", value = OP_prescriptions, row.names = FALSE, header = TRUE, overwrite = TRUE)
