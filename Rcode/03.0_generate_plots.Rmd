@@ -61,8 +61,8 @@ output_dir_data <- './data/'
 output_dir_plots <- './plots/'
 
 # create data folder if not yet existent
-if (!dir.exists("./data-plots")) {
-  dir.create("./data-plots")
+if (!dir.exists("./plots")) {
+  dir.create("./plots")
 }
 
 # load BNF code data
