@@ -7,8 +7,8 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
-knitr::opts_chunk$set(dev = 'png')
-knitr::opts_chunk$set(dpi=500)
+knitr::opts_chunk$set(dev = 'jpg')
+knitr::opts_chunk$set(dpi=300)
 ```
 
 # Generate Plots
@@ -33,10 +33,10 @@ OP_measures_lsoa.csv
 
 ## Output files:
 
-figure_1.tiff
-figure_2.tiff
-figure_3.tiff
-figure_4.tiff
+figure_1.jpg
+figure_2.jpg
+figure_3.jpg
+figure_4.jpg
 
 
 ## 1. Load libraries and import data
@@ -145,6 +145,10 @@ final_date <- tibble(date = c("2022-01-01", "2022-01-01"),
 for_lines_subsets <- rbind(for_lines_subsets, 
                            final_date)
 
+# replace underscores with spaces
+for_lines_subsets <- for_lines_subsets %>%
+  mutate(name = gsub("_", " ", name))
+
 # generate plot
 plt <- ggplot(for_lines_subsets, 
               aes(x= date,
@@ -174,7 +178,7 @@ lines_national <- plt +
 
 # plot and save
 plot(lines_national)
-# ggsave(paste(output_dir_plots, "figure1B.tiff", sep=""))
+# ggsave(paste(output_dir_plots, "figure1B.jpg", sep=""))
 
 
 ```
@@ -191,6 +195,10 @@ for_bars_march <- categories_prac %>%
   pivot_longer(c(ics_not_laba, laba_products, saba_inhaler_products)) %>%
   group_by(year, name) %>%
   summarise(Number_of_prescriptions = sum(value))
+
+# replace underscores with spaces
+for_bars_march <- for_bars_march %>%
+  mutate(name = gsub("_", " ", name))
 
 # generate plot
 plt <- ggplot(data = for_bars_march,
@@ -215,8 +223,8 @@ bars_march_national <- plt  + geom_bar(
 
 # plot and save
 plot(bars_march_national)
-# ggsave(paste(output_dir_plots, "figure1A.tiff", sep=""),
-#        plot=bars_march_national, dpi = 150)
+# ggsave(paste(output_dir_plots, "figure1A.jpg", sep=""),
+#        plot=bars_march_national, dpi = 300)
 
 ```
 
@@ -231,6 +239,10 @@ for_bars_perc <- for_lines_subsets %>%
   mutate(name = ifelse(Measure == 'all_saba_ics_products', 'all_saba_ics', Measure),
          chart = if_else(Measure %in% c('all_saba_ics', 'mdi', 'dpi'), 'Totals', 'Subsets')) %>%
   arrange(chart)
+
+# replace underscores with spaces
+for_bars_perc <- for_bars_perc %>%
+  mutate(name = gsub("_", " ", name))
 
 # generate plot
 plt <- ggplot(data = for_bars_perc,
@@ -253,8 +265,8 @@ bars_perc_national <- plt + geom_bar(stat="identity", width=0.5) +
 
 # plot and save
 plot(bars_perc_national)
-# ggsave(paste(output_dir_plots, "figure1C.tiff", sep=""), 
-#        plot=bars_perc_national, dpi = 150)
+# ggsave(paste(output_dir_plots, "figure1C.jpg", sep=""), 
+#        plot=bars_perc_national, dpi = 300)
 
 ```
 
@@ -265,9 +277,9 @@ figure_1 <- grid.arrange(bars_march_national,
                   lines_national,
                   bars_perc_national)
 
-ggsave(paste(output_dir_plots, "figure_1.tiff", sep=""), 
+ggsave(paste(output_dir_plots, "figure_1.jpg", sep=""), 
        plot=figure_1,
-       dpi = 150,
+       dpi = 300,
        width = 8,
        height = 10,
        units = 'in')
@@ -378,6 +390,10 @@ perc_dif_decile_bars <- perc_dif_decile %>%
                                               'National',
                                               'Highest dep.')))
 
+# replace underscores with spaces
+perc_dif_decile_bars <- perc_dif_decile_bars %>%
+  mutate(name = gsub("_", " ", name))
+
 # generate plot
 bars_IMD_med <- ggplot(perc_dif_decile_bars,
                        aes(x= IMD_decile_rank,
@@ -391,16 +407,17 @@ bars_IMD_med <- ggplot(perc_dif_decile_bars,
              ncol = 1) +
   theme_minimal() +
   labs(x = "IMD decile rank", 
-       y = "Median % increase in March 2020 PP") +
+       y = "Median % increase in March 2020") +
   labs(title = "B", hjust = 'left') +
   theme(plot.title = element_text(size=25)) +
   theme(axis.text = element_text(size=10),
         title = element_text(size=10)) +
-  theme(axis.text.x = element_text(angle = 35))
+  theme(axis.text.x = element_text(angle = 35,
+                                   hjust = .75))
 
 # plot and save
 plot(bars_IMD_med)
-# ggsave(paste(output_dir_plots, "figure_2B.tiff", sep=""))
+# ggsave(paste(output_dir_plots, "figure_2B.jpg", sep=""))
 
 ```
 
@@ -451,6 +468,14 @@ categories_rib_plot_IMD_med <- categories_rib_plot %>%
          lab_text = ifelse(IMD_decile_rank == 10, " Least deprived", lab_text),
          lab_text = ifelse(IMD_decile_rank == 11, " National Median", lab_text))
 
+# replace underscores with spaces
+categories_rib_plot <- categories_rib_plot %>%
+  mutate(name = gsub("_", " ", name))
+
+# replace underscores with spaces
+categories_rib_plot_IMD_med <- categories_rib_plot_IMD_med %>%
+  mutate(name = gsub("_", " ", name))
+
 # Draw ribbon plot
 ribplot <- ggplot() +
   geom_lineribbon(data = categories_rib_plot %>% 
@@ -489,7 +514,7 @@ ribplot <- ggplot() +
 
 # plot and save
 plot(ribplot)
-# ggsave(paste(output_dir_plots, "figure_2A.tiff", sep=""), ribplot)
+# ggsave(paste(output_dir_plots, "figure_2A.jpg", sep=""), ribplot)
 
 ```
 
@@ -501,9 +526,11 @@ figure_2 <- grid.arrange(ribplot, bars_IMD_med,
                                                c(1,1,1,2,2),
                                                c(1,1,1,2,2)))
 
-ggsave(paste(output_dir_plots, "figure_2.tiff", sep=""), 
+
+
+ggsave(paste(output_dir_plots, "figure_2.jpg", sep=""), 
        plot=figure_2,
-       dpi = 150,
+       dpi = 300,
        width = 10,
        height = 8,
        units = 'in')
@@ -551,6 +578,16 @@ measures_rib_plot_IMD_med <- measures_rib_plot %>%
          lab_text = ifelse(IMD_decile_rank == 10, " Least deprived", lab_text),
          lab_text = ifelse(IMD_decile_rank == 11, " National Median", lab_text))
 
+
+# replace underscores with spaces
+measures_rib_plot <- measures_rib_plot %>%
+  mutate(measure = gsub("_", " ", measure))
+
+# replace underscores with spaces
+measures_rib_plot_IMD_med <- measures_rib_plot_IMD_med %>%
+  mutate(measure = gsub("_", " ", measure))
+
+
 # generate ribbon plot
 ribplot_meas <- ggplot() +
   geom_lineribbon(data = measures_rib_plot %>% 
@@ -572,7 +609,7 @@ ribplot_meas <- ggplot() +
              scales="free_y",
              ncol = 1) +
   geom_hline(data = measures_rib_plot %>%
-               filter(measure == 'ics_pppm'),
+               filter(measure == 'ics pppm'),
              aes(yintercept = 0.417), 
              linetype=1,
              color = 'grey') +
@@ -594,7 +631,7 @@ ribplot_meas <- ggplot() +
 
 # plot and save
 plot(ribplot_meas)
-# ggsave(paste(output_dir_plots, "figure_3A.tiff", sep=""), ribplot_meas)
+# ggsave(paste(output_dir_plots, "figure_3A.jpg", sep=""), ribplot_meas)
 
 ```
 
@@ -644,6 +681,10 @@ for_line_IMD <- for_line_IMD_orig %>%
   mutate(lab_var = ifelse(date_period == 'post', TRUE, '')) %>%
   mutate(date_period = factor(date_period, levels = c('pre','lockdown','post', ' ')))
 
+# replace underscores with spaces
+for_line_IMD <- for_line_IMD %>%
+  mutate(measure = gsub("_", " ", measure))
+
 # generate line plots
 measlines_prepost <- ggplot(data = for_line_IMD,
                    aes(x=date_period, 
@@ -657,7 +698,7 @@ measlines_prepost <- ggplot(data = for_line_IMD,
              scales="free_y",
              ncol = 1) +
   geom_hline(data = for_line_IMD %>% 
-               filter(measure == 'ics_pppm'),
+               filter(measure == 'ics pppm'),
              aes(yintercept = 0.417), linetype=1) +
   theme(legend.position = "none") +
   geom_text(data = for_line_IMD %>%
@@ -667,7 +708,7 @@ measlines_prepost <- ggplot(data = for_line_IMD,
                 label = paste0(IMD_decile_rank)),
             size = 3,
             hjust = 'left') +
-  labs(x = "Date",
+  labs(x = "Time Period",
        y = "Prescribing index aggregated by time period") +
   labs(title = "B", hjust = 'left') +
   theme(plot.title = element_text(size=25))
@@ -675,7 +716,7 @@ measlines_prepost <- ggplot(data = for_line_IMD,
 
 # plot and save      
 plot(measlines_prepost)
-# ggsave(paste(output_dir_plots, "figure_3B.tiff", sep=""),
+# ggsave(paste(output_dir_plots, "figure_3B.jpg", sep=""),
 #        measlines_prepost)
 ```
 
@@ -687,9 +728,9 @@ figure_3 <- grid.arrange(ribplot_meas, measlines_prepost,
                                                c(1,1,1,2,2),
                                                c(1,1,1,2,2)))
 
-ggsave(paste(output_dir_plots, "figure_3.tiff", sep=""), 
+ggsave(paste(output_dir_plots, "figure_3.jpg", sep=""), 
        plot=figure_3,
-       dpi = 150,
+       dpi = 300,
        width = 10,
        height = 10,
        units = 'in')
@@ -736,10 +777,29 @@ env_plot1 <- ggplot(data = for_env_plot1,
                         group = subset,
                         color = subset,
                         fill = subset)) +
-  geom_line() +
-  theme_minimal()
+  geom_line(size=1) +
+  theme_minimal() +
+  labs(x = "Date",
+       y = "Number of Items") +
+  scale_y_continuous(labels=scales::unit_format(suffix="m",
+                                                scale=0.000001, sep="", big.mark   = ",")) +
+    scale_colour_manual(values = 
+                          c(dpi = "#00BFC4",
+                            mdi = "#F8766D"))+
+  theme(axis.text = element_text(size=12),
+        title = element_text(size=12)) +
+  guides(color=guide_legend(title="")) +
+  labs(title = "A", hjust = 'left') +
+  theme(plot.title = element_text(size=25))
+
+
 
 env_plot1
+
+# Change "is_generic" options
+for_env_plot <- for_env_plot %>%
+  mutate(is_generic = ifelse(is_generic == TRUE, "Generic", is_generic),
+         is_generic = ifelse(is_generic == FALSE, "Non-generic", is_generic))
 
 # generate plot 2
 env_plot2 <- ggplot(data = for_env_plot,
@@ -750,16 +810,29 @@ env_plot2 <- ggplot(data = for_env_plot,
                         fill = is_generic
                         )) +
   facet_grid(~subset) +
-  geom_line() +
-  theme_minimal()
+  geom_line(size=1) +
+  theme_minimal() +
+  labs(x = "Date",
+       y = "Number of Items") +
+  scale_y_continuous(labels=scales::unit_format(suffix="m",
+                                                scale=0.000001, sep="", big.mark   = ",")) +
+  scale_color_manual(values = c(Generic = "#00BFC4",
+                                 "Non-generic" = "#F8766D"))+
+  theme(axis.text = element_text(size=12),
+        title = element_text(size=12),
+        strip.text.x = element_text(size = 14)) +
+  guides(color=guide_legend(title="")) +
+  labs(title = "B", hjust = 'left') +
+  theme(plot.title = element_text(size=25))
+
 
 env_plot2
 
 # combine plots and save
 figure_env <- grid.arrange(env_plot1, env_plot2)
-ggsave(paste(output_dir_plots, "figure_4.tiff", sep=""), 
+ggsave(paste(output_dir_plots, "figure_4.jpg", sep=""), 
        plot=figure_env,
-       dpi = 150,
+       dpi = 300,
        width = 6,
        height = 6,
        units = 'in')
